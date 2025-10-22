@@ -1,0 +1,16 @@
+{
+  "pguser": "avant_app",
+  "pghost": "avantmsdb.czcuaoiw9al9.eu-west-1.rds.amazonaws.com",
+  "pgpassword": "123_jkpcag_123",
+  "pgdatabase": "avant",
+  "pgport": "5432",
+  "discriminator": 3,
+  "topic": "#",
+  "puerto": 9999,
+  "arrDiscriminator": {
+    "WMBUS": 3,
+    "SIGFOX": 2,
+    "INETCOUNTERS": 1
+  },
+  "arrDiscriminatorRV": ["MQTT", "INETCOUNTERS", "SIGFOX", "WMBUS"]
+}

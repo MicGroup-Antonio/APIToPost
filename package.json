@@ -1,0 +1,17 @@
+{
+  "name": "api-to-post",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "serve": "node server.js",
+    "send": "node sender.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.0",
+    "dotenv": "^16.6.1",
+    "express": "^4.19.0",
+    "node-fetch": "^3.3.2",
+    "pg": "^8.16.3"
+  }
+}
