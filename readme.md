@@ -22,7 +22,7 @@ npm run serve
 
 ## Pruebas
 
-Para enviar pruebas
+Para enviar pruebas. El archivo sender.js tiene harcodeada la ip, en una variable en el mismo. hay que cambiarla ahí
 ```
 npm run send
 ```

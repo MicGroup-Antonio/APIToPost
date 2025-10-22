@@ -12,7 +12,6 @@ if (!configPath) {
 const config = require("." + configPath);
 import {
   id,
-  esTST,
   parseTrama,
   buildAutenticacion,
   getName,
@@ -52,6 +51,15 @@ console.log("DB Config:", {
 });
 
 var pool = new pg.Pool(dbConfig);
+
+pool.connect((err, client, release) => {
+  if (err) {
+    console.error("❌ Error conectando al pool:", err.message);
+  } else {
+    console.log("✅ Conexión exitosa al pool!");
+    release();
+  }
+});
 /* ------------------- DB -------------------- */
 
 /* ------------------- TST ------------------- */
