@@ -1,10 +1,17 @@
 # API To Post Avant
 
+Preparar el Programa
+Variables de entorno
+Ejecutar el servidor
+Pruebas
+
+
 ## Preparar el Programa
 Para instalar todo ejecuta npm install
 
 ## Variables de entorno
-en .env se especifica cual de los archivos de config se usa para la configuración
+en .env se especifica cual de los archivos de config se usa para la configuración, posteriormente donde se necesite puede cargarse:
+
 ```javascript
 const configPath = process.env.CONFIG_PATH;
 if (!configPath) {
@@ -53,3 +60,13 @@ esa ultima línea, indica el id de trama en los 2 primeros caracteres (habría q
 ```
 npm run send ask 017f15
 ```
+
+## Despliegue
+Para desplegar el programa, ha de subirse a la sección de Front de pre, o de pro, a la carpeta /etc/node/
+hay que editar el archivo ecosystem.config.cjs, poniendo el mismo CONFIG_PATH que en .env
+Posteriormente:
+`pm2 list` permite ver si el servicio ya está corriendo
+`pm2 stop` para el proceso con el id, ej. `pm2 stop 4`
+`pm2 start` arranca el proceso con el id, ej. `pm2 start 4`
+`pm2 delete` elimina el proceso con el id, ej. `pm2 delete 4`
+`pm2 start ecosystem.config.cjs` arranca el proceso
