@@ -1,9 +1,10 @@
 {
   "pguser": "avant_app",
-  "pghost": "localhost",
+  "pghost": "10.0.70.100",
   "pgpassword": "123_Avant_123",
-  "pgdatabase": "avant",
+  "pgdatabase": "mic-pro-03",
   "pgport": "5432",
+  "serverMQTT": "mqtt://10.0.70.99:8182",
   "discriminator": 3,
   "topic": "#",
   "puerto": 9999,
