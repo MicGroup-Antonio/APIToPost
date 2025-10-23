@@ -20,6 +20,7 @@ import {
   buildEnd,
   buildACK,
   buildNACK,
+  buildNACKDesdeMensaje,
 } from "./tst.js";
 
 /* ------------------- DB -------------------- */
@@ -119,13 +120,15 @@ function inserta(topic, trama) {
 
 async function processTstProtocol(message) {
   //  console.log(message);
-
+  let respuesta = "";
   let trama = parseTrama(message.toString("hex"));
   console.log(trama);
   if (!trama || !trama.idTrama) {
     console.log("Trama fallida");
-    respuesta = buildNACK(trama);
-    return Buffer.from(respuesta, "hex");
+
+    respuesta = buildNACKDesdeMensaje(message);
+    const buffer = Buffer.from(respuesta, "hex");
+    return buffer;
   }
 
   let insertTopic = findName(trama, callStack);
@@ -138,10 +141,12 @@ async function processTstProtocol(message) {
   ) {
     console.log("Origen no encontrado");
     respuesta = buildNACK(trama);
-    return Buffer.from(respuesta, "hex");
+
+    const buffer = Buffer.from(respuesta, "hex");
+    console.log("buffer " + buffer);
+    return buffer;
   }
 
-  let respuesta = "";
   switch (trama.idTrama ? trama.idTrama.toLowerCase() : undefined) {
     case id.Autenticacion:
       console.log("Es Autenticacion");

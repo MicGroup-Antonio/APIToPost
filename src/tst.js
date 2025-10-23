@@ -284,6 +284,24 @@ function buildNACK(trama) {
   const cadena = buildTrama(respuesta, false);
   return cadena + calcularCRC(cadena);
 }
+function buildNACKDesdeMensaje(mensaje) {
+  while (mensaje.length < 10) {
+    mensaje += "0";
+  }
+  let respuesta = {};
+  respuesta.idTrama = "41";
+  respuesta.ack = "10";
+  respuesta.idFrame = mensaje.slice(2 * charPerByte, 3 * charPerByte);
+  respuesta.idSessionH = mensaje.slice(3 * charPerByte, 4 * charPerByte);
+  respuesta.idSessionL = mensaje.slice(4 * charPerByte, 5 * charPerByte);
+  respuesta.size = "0000";
+  respuesta.value = "";
+  const cadena = buildTrama(respuesta, false);
+  const res = cadena + calcularCRC(cadena);
+  console.log(`res: ${res}`);
+
+  return res;
+}
 /* -------------------------- Contestadores------------------------ */
 
 export {
@@ -300,4 +318,5 @@ export {
   buildEnd,
   buildACK,
   buildNACK,
+  buildNACKDesdeMensaje,
 };
