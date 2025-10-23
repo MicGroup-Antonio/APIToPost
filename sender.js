@@ -1,8 +1,6 @@
 import fetch from "node-fetch";
 import { calcularCRC } from "./src/tst.js";
 
-const API_URL = "http://localhost:9999/";
-
 const charPerByte = 2;
 const hexOpciones = {
   auth: "d00000000067003836313531383034303937363837390000000000007573657200000000000000000000000000000000007061737300000000000000000000000000000000004e6f6d627265416c417a6172000000000000000000000000000000000000000000000000000000009081",
@@ -60,7 +58,7 @@ hex = modificarTrama(hex, {
 });
 
 console.log(`Enviando ${hex}`);
-const url = `${API_URL}${encodeURIComponent(hex)}`;
+const url = `http://localhost:9999/${encodeURIComponent(hex)}`;
 
 async function enviarHex() {
   try {

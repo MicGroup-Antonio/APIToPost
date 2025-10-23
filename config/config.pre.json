@@ -1,16 +1,21 @@
 {
-  "pguser": "avant_app",
-  "pghost": "localhost",
-  "pgpassword": "123_Avant_123",
-  "pgdatabase": "avant",
-  "pgport": "5432",
-  "discriminator": 3,
-  "topic": "#",
-  "puerto": 9999,
-  "arrDiscriminator": {
-    "WMBUS": 3,
-    "SIGFOX": 2,
-    "INETCOUNTERS": 1
-  },
-  "arrDiscriminatorRV": ["MQTT", "INETCOUNTERS", "SIGFOX", "WMBUS"]
+        "pguser":"avant_app",  
+  	"pghost":"10.0.70.100",
+        "pgpassword":"123_Avant_123",
+        "pgdatabase":"mic-pro-03",
+        "pgport":"5432",
+        "discriminator": 3,
+        "topic": "#",
+        "puerto": 9999,
+        "arrDiscriminator": {
+                "WMBUS": 3,
+                "SIGFOX": 2,
+                "INETCOUNTERS": 1
+        },
+        "arrDiscriminatorRV": [
+                "MQTT",
+                "INETCOUNTERS",
+                "SIGFOX",
+                "WMBUS"
+        ]
 }

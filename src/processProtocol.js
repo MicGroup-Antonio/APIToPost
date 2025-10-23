@@ -5,8 +5,10 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const configPath = process.env.CONFIG_PATH;
 
+const fs = require("fs/promises");
+
 if (!configPath) {
-  throw new Error("CONFIG_PATH no está definido en .env");
+  throw new Error("CONFIG_PATH no esta definido en .env");
 }
 
 const config = require("." + configPath);
@@ -21,6 +23,16 @@ import {
   buildACK,
   buildNACK,
 } from "./tst.js";
+
+async function escribirLog(logEntry) {
+  try {
+    await fs.appendFile("./log", logEntry);
+    await fs.appendFile("./log", "\n");
+    console.log("📝 Log entry written to file");
+  } catch (err) {
+    console.log("❌ Failed to write to log file:", err.message);
+  }
+}
 
 /* ------------------- DB -------------------- */
 process.env.PGUSER = config.pguser;
@@ -42,7 +54,8 @@ var dbConfig = {
   max: 20,
 };
 
-console.log("DB Config:", {
+escribirLog("DB Config:");
+escribirLog({
   user: dbConfig.user,
   host: dbConfig.host,
   database: dbConfig.database,
@@ -54,9 +67,9 @@ var pool = new pg.Pool(dbConfig);
 
 pool.connect((err, client, release) => {
   if (err) {
-    console.error("❌ Error conectando al pool:", err.message);
+    escribirLog("? Error conectando al pool: " + err.message);
   } else {
-    console.log("✅ Conexión exitosa al pool!");
+    escribirLog("? Conexion exitosa al pool!");
     release();
   }
 });
@@ -79,64 +92,64 @@ const callStack = [];
 /* ------------------- TST ------------------- */
 
 function inserta(topic, trama) {
-  // console.log('Attempting to insert:', topic, trama)
+  // escribirLog('Attempting to insert:', topic, trama)
 
   var strSQL =
     "INSERT into trm_avant.prueba ( value, discriminator, status, topic, plot_date  ) VALUES($1, $2, $3, $4, now()) RETURNING id";
   var valores = [trama, config.discriminator, "N", topic];
-  // console.log(strSQL)
-  //console.log(valores)
+  // escribirLog(strSQL)
+  //escribirLog(valores)
 
-  console.log("Executing query...");
+  escribirLog("Executing query...");
 
   pool.query(strSQL, valores, (err, res) => {
-    console.log("Query completed!");
-    var fs = require("fs");
+    escribirLog("Query completed!");
     var logEntry =
       topic + ";" + trama + ";" + config.discriminator + ";" + Date.now() + ";";
 
     if (!err) {
-      console.log("✅ inserción correcta - ID:", res.rows[0].id);
+      escribirLog("✅ inserción correcta - ID: " + res.rows[0].id);
       logEntry += "SUCCESS";
     } else {
-      console.log("❌ inserción Incorrecta");
-      console.log("Error message:", err.message);
-      console.log("Error code:", err.code);
-      console.log("Error detail:", err.detail);
-      console.log("Error hint:", err.hint);
+      escribirLog("❌ inserción Incorrecta");
+      escribirLog("Error message: " + err.message);
+      escribirLog("Error code: " + err.code);
+      escribirLog("Error detail: " + err.detail);
+      escribirLog("Error hint: " + err.hint);
+      escribirLog(err);
       logEntry += err.code || "UNKNOWN_ERROR";
     }
 
     fs.appendFile("./log", logEntry + "\n", function (err) {
       if (err) {
-        console.log("❌ Failed to write to log file:", err.message);
+        escribirLog("❌ Failed to write to log file: " + err.message);
       } else {
-        console.log("📝 Log entry written to file");
+        escribirLog("📝 Log entry written to file");
       }
     });
   });
 }
 
 async function processTstProtocol(message) {
-  //  console.log(message);
+  //  escribirLog(message);
 
   let trama = parseTrama(message.toString("hex"));
-  console.log(trama);
+  escribirLog(trama);
   if (!trama || !trama.idTrama) {
-    console.log("Trama fallida");
+    escribirLog("Trama fallida");
     respuesta = buildNACK(trama);
     return Buffer.from(respuesta, "hex");
   }
 
   let insertTopic = findName(trama, callStack);
-  //  console.log(`insertTopic: ${insertTopic}`);
+  //  escribirLog(`insertTopic: ${insertTopic}`);
 
-  console.log(`topic: ${insertTopic}`);
+  escribirLog(`topic: ${insertTopic}`);
   if (
     (!insertTopic || insertTopic.length < 1) &&
     trama.idTrama.toLowerCase() != id.Autenticacion
   ) {
-    console.log("Origen no encontrado");
+    escribirLog("Origen no encontrado");
     respuesta = buildNACK(trama);
     return Buffer.from(respuesta, "hex");
   }
@@ -144,46 +157,46 @@ async function processTstProtocol(message) {
   let respuesta = "";
   switch (trama.idTrama ? trama.idTrama.toLowerCase() : undefined) {
     case id.Autenticacion:
-      console.log("Es Autenticacion");
+      escribirLog("Es Autenticacion");
       trama.topic = getName(message.toString("hex"));
-      console.log(trama.topic);
+      escribirLog(trama.topic);
 
       respuesta = buildAutenticacion(trama, callStack);
       break;
     case id.ASK: // ask
-      console.log("Es ASK");
+      escribirLog("Es ASK");
 
       respuesta = buildACK(trama, callStack);
       break;
     case id.LecturaSimple:
-      console.log("Es LecturaSimple");
+      escribirLog("Es LecturaSimple");
 
       inserta(insertTopic, trama.value);
       respuesta = buildACK(trama, callStack);
       break;
     case id.LecturaAgrupada:
-      console.log("Es LecturaAgrupada");
+      escribirLog("Es LecturaAgrupada");
 
       let tramas = getTramas(trama);
-      console.log(`tramas recibidas`);
+      escribirLog(`tramas recibidas`);
 
-      console.log(tramas);
+      escribirLog(tramas);
 
       for (let element of tramas) {
-        console.log(element);
+        escribirLog(element);
 
         inserta(insertTopic, element.value);
       }
-      console.log("acabó el for");
+      escribirLog("acabó el for");
 
       respuesta = buildACK(trama, callStack);
       break;
     case id.End:
-      console.log("Es Fin de transmisión");
+      escribirLog("Es Fin de transmisión");
       buildEnd(trama, callStack);
       break;
     default:
-      console.log("Es default");
+      escribirLog("Es default");
 
       respuesta = buildNACK(trama);
       break;
@@ -192,11 +205,11 @@ async function processTstProtocol(message) {
   if (!respuesta) respuesta = buildNACK(trama);
 
   const buffer = Buffer.from(respuesta, "hex");
-  //  console.log("respuesta " + respuesta);
-  //  console.log("buffer " + buffer);
-  //  console.log(`Enviada respuesta a ${topicRespuesta}, callstack:`);
-  console.log("callStack");
-  console.log(callStack);
+  //  escribirLog("respuesta " + respuesta);
+  //  escribirLog("buffer " + buffer);
+  //  escribirLog(`Enviada respuesta a ${topicRespuesta}, callstack:`);
+  escribirLog("callStack");
+  escribirLog(callStack);
   return buffer;
 }
 
