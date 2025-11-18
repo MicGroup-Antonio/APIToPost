@@ -1,7 +1,11 @@
 import fetch from "node-fetch";
 import { calcularCRC } from "./src/tst.js";
 
-const API_URL = "http://localhost:9999/";
+const API_URL1 = "http://mgapi.hostsolucion.com/";
+const API_URL2 = "http://localhost:3005/";
+const API_URL3 = "http://10.0.70.99:3005/";
+const API_URL4 = "http://104.21.53.141/";
+const API_URL = API_URL1;
 
 const charPerByte = 2;
 const hexOpciones = {

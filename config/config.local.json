@@ -6,7 +6,7 @@
   "pgport": "5432",
   "discriminator": 3,
   "topic": "#",
-  "puerto": 9999,
+  "puerto": 3005,
   "arrDiscriminator": {
     "WMBUS": 3,
     "SIGFOX": 2,

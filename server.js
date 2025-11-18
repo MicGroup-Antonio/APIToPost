@@ -42,7 +42,7 @@ app.all("*", async (req, res) => {
   }
 });
 
-const PORT = config.puerto || 9999;
+const PORT = config.puerto || 3005;
 app.listen(PORT, () => {
   console.log(`Servidor escuchando en http://localhost:${PORT}`);
 });
