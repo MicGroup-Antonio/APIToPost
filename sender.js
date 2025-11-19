@@ -135,9 +135,10 @@ hex = modificarTrama(hex, {
         if (optionNumber === API_URL_LIST.length)
           API_URL = await ask("Introduzca la nueva IP: ");
         else API_URL = API_URL_LIST[optionNumber];
-        option = await ask(
-          "Desea añadir el puerto 3005: 1->si 2->introducir manualmente (cualquier otro valor)->no "
-        );
+        console.log("Desea añadir el puerto 3005?");
+        console.log("1 -> si");
+        console.log("2 -> introducir manualmente");
+        option = await ask("(cualquier otro valor) -> no ");
         if (option === "1") API_URL += PORT;
         else if (option === "2")
           API_URL += ":" + (await ask("Introduzca el puerto: "));
@@ -145,10 +146,14 @@ hex = modificarTrama(hex, {
           "Desea añadir http:// 1->si (cualquier otro valor)->no "
         );
         if (option === "1") API_URL = http + API_URL;
+
+        /*
         option = await ask(
           "Desea añadir '/' al final 1->si (cualquier otro valor)->no "
         );
         if (option === "1") API_URL += "/";
+        */
+        if (API_URL.slice(API_URL.length - 1) !== "/") API_URL += "/";
         console.log("la dirección resultante es " + API_URL);
         await ask("Pulse enter para continuar ");
         option = "";
@@ -236,8 +241,10 @@ hex = modificarTrama(hex, {
             if (respuesta.slice(0, 2) !== "41") {
               console.log("No es ACK/NACK");
             } else if (respuesta.slice(2, 4) === "00") {
-              console.log("Es ACK");
-            } else if (respuesta.slice(0, 2) === "01") {
+              console.log("Es ACK -- actualizamos idSesion");
+              idSession = respuesta.slice(4, 10);
+              incrementarIdSession();
+            } else if (respuesta.slice(2, 4) === "01") {
               console.log("Es NACK");
             } else
               console.log(
@@ -246,8 +253,6 @@ hex = modificarTrama(hex, {
                   4
                 )} desconocido`
               );
-            idSession = respuesta.slice(4, 10);
-            incrementarIdSession();
             console.log(
               `idSession recibido = ${respuesta.slice(
                 4,
