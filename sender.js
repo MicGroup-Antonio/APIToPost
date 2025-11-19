@@ -1,11 +1,19 @@
 import fetch from "node-fetch";
 import { calcularCRC } from "./src/tst.js";
 
-const API_URL1 = "http://mgapi.hostsolucion.com/";
-const API_URL2 = "http://localhost:3005/";
-const API_URL3 = "http://10.0.70.99:3005/";
-const API_URL4 = "http://104.21.53.141/";
-const API_URL = API_URL1;
+import readline from "readline";
+
+const API_URL_LIST = [
+  "http://mgapi.hostsolucion.com/",
+  "localhost",
+  "10.0.70.99",
+  "104.21.53.141",
+  "172.67.213.105",
+];
+let API_URL = API_URL_LIST[0];
+let name = "NuevoNombre";
+const PORT = ":3005";
+const http = "http://";
 
 const charPerByte = 2;
 const hexOpciones = {
@@ -28,6 +36,8 @@ function asciiToHexRellenado(str, lengthBytes) {
 }
 
 function modificarTrama(baseHex, { idSession, name }) {
+  console.log("modificarTrama " + idSession + " " + name);
+
   let trama = "";
   trama += baseHex.slice(0 * charPerByte, 2 * charPerByte);
   trama += idSession;
@@ -46,38 +56,214 @@ function modificarTrama(baseHex, { idSession, name }) {
   return trama.toLowerCase();
 }
 
-const opcion = process.argv[2] || "fallo"; // por defecto 'a' si no se pasa nada
-const idSession = process.argv[3] || "000000"; // Frame, SesionH, SesionL
-const name =
-  process.argv[4] && process.argv[4].length > 0 ? process.argv[4] : null;
+function incrementarIdSession() {
+  // Obtener los dos primeros caracteres como número hexadecimal
+  const hexa = idSession.substring(0, 2);
 
-let hex = hexOpciones[opcion].toLowerCase();
+  // Convertir a entero base 16, sumar 1
+  let num = parseInt(hexa, 16) + 1;
 
-if (!hex) {
-  console.error(`Opción inválida: ${opcion}`);
-  process.exit(1);
+  // Convertir otra vez a hex y asegurarse de que quede en dos caracteres
+  const nuevoHex = num.toString(16).toUpperCase().padStart(2, "0");
+
+  // Reconstruir la idSession
+  idSession = nuevoHex + idSession.substring(2);
 }
 
+function ask(question) {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) =>
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer);
+    })
+  );
+}
+
+const hexKeysByIndex = [
+  "auth",
+  "ask",
+  "info",
+  "trama",
+  "grupo",
+  "fallo",
+  "end",
+];
+let hex = hexOpciones["auth"].toLowerCase();
+let idSession = "000000";
 hex = modificarTrama(hex, {
   idSession,
   name,
 });
+(async () => {
+  let option = "";
 
-console.log(`Enviando ${hex}`);
-const url = `${API_URL}${encodeURIComponent(hex)}`;
+  while (option !== "0") {
+    console.clear();
+    console.log("1 seleccionar dirección ip");
+    console.log("2 seleccionar mensaje");
+    console.log("3 modificar numero o id");
+    console.log("4 Cambiar nombre de remitente");
+    console.log("5 enviar");
+    console.log("0 salir");
+    option = await ask("Selecciona una opción: ");
 
-async function enviarHex() {
-  try {
-    const res = await fetch(url);
-    const buffer = await res.arrayBuffer();
-    const respuesta = Buffer.from(buffer).toString("hex");
-    console.log("Respuesta recibida:");
-    console.log(`buffer : ${buffer}`);
-    console.log(`respuesta: ${respuesta}`);
-    console.log(`Responder a ${respuesta.slice(4, 10)}`);
-  } catch (err) {
-    console.error("Error al enviar GET:", err.message);
+    switch (option) {
+      case "1":
+        console.clear();
+        console.log("Escoge una dirección");
+        API_URL_LIST.forEach((dir, index) => {
+          console.log(index + " " + dir);
+        });
+        console.log(API_URL_LIST.length + " Introducción manual");
+        option = await ask("Selecciona una opción: ");
+        const optionNumber = Number(option);
+        if (
+          Number.isNaN(optionNumber) ||
+          optionNumber < 0 ||
+          optionNumber > API_URL_LIST.length
+        ) {
+          console.log("Opción no válida.");
+          await ask("Pulse enter para continuar ");
+          option = "";
+          break;
+        }
+        if (optionNumber === API_URL_LIST.length)
+          API_URL = await ask("Introduzca la nueva IP: ");
+        else API_URL = API_URL_LIST[optionNumber];
+        option = await ask(
+          "Desea añadir el puerto 3005: 1->si 2->introducir manualmente (cualquier otro valor)->no "
+        );
+        if (option === "1") API_URL += PORT;
+        else if (option === "2")
+          API_URL += ":" + (await ask("Introduzca el puerto: "));
+        option = await ask(
+          "Desea añadir http:// 1->si (cualquier otro valor)->no "
+        );
+        if (option === "1") API_URL = http + API_URL;
+        option = await ask(
+          "Desea añadir '/' al final 1->si (cualquier otro valor)->no "
+        );
+        if (option === "1") API_URL += "/";
+        console.log("la dirección resultante es " + API_URL);
+        await ask("Pulse enter para continuar ");
+        option = "";
+        option = "";
+        break;
+      case "2":
+        console.clear();
+        console.log("0 - autenticación");
+        console.log("1 - ask");
+        console.log("2 - info");
+        console.log("3 - trama simple");
+        console.log("4 - trama agrupada");
+        console.log("5 - mensaje fallido");
+        console.log("6 - fin de transmisión");
+        option = await ask("Escoge un mensaje (0-6): ");
+        const idx = Number(option);
+        if (Number.isNaN(idx) || idx < 0 || idx >= hexKeysByIndex.length) {
+          console.error(`Opción inválida: ${option}`);
+          await ask("Pulse enter para continuar ");
+          option = "";
+          break;
+        }
+        const hexKey = hexKeysByIndex[idx];
+        hex = hexOpciones[hexKey].toLowerCase();
+        let named = idx === 0 ? name : null;
+        // console.log({ name, named, idx });
+        hex = modificarTrama(hex, {
+          idSession,
+          name: named,
+        });
+        console.log(`Seleccionado: ${hexKey}`);
+        await ask("Pulse enter para continuar ");
+        option = "";
+        break;
+      case "3":
+        console.clear();
+        console.log(
+          `Numero actual = ${idSession.substring(
+            0,
+            2
+          )} id de sesión actual = ${idSession.substring(2, 6)}`
+        );
+        let newNumber = await ask(
+          "Introduzca el nuevo número (deje vacía para mantener el mismo)"
+        );
+        let newSession = await ask(
+          "Introduzca la nueva sesión (deje vacía para mantener la misma)"
+        );
+        newNumber =
+          newNumber.length > 0 ? newNumber : idSession.substring(0, 2);
+
+        newSession =
+          newSession.length > 0 ? newSession : idSession.substring(2, 6);
+        idSession = newNumber + newSession;
+
+        console.log(`los datos resultantes son:)`);
+        console.log(
+          `numero ${idSession.substring(
+            0,
+            2
+          )} id de sesión = ${idSession.substring(2, 6)}`
+        );
+        await ask("Pulse enter para continuar ");
+        option = "";
+        option = "";
+        break;
+      case "4":
+        console.clear();
+        name = await ask(`Introduzca nuevo nombre: `);
+        console.log(`Recuerde mandar mensaje de auth para aplicar ${name}`);
+        await ask("Pulse enter para continuar ");
+        break;
+
+      case "5":
+        console.clear();
+        console.log(`Enviando ${hex}`);
+        const url = `${API_URL}${encodeURIComponent(hex)}`;
+        async function enviarHex() {
+          try {
+            const res = await fetch(url);
+            const buffer = await res.arrayBuffer();
+            const respuesta = Buffer.from(buffer).toString("hex");
+            console.log("Respuesta recibida:");
+            console.log(`respuesta: ${respuesta}`);
+            if (respuesta.slice(0, 2) !== "41") {
+              console.log("No es ACK/NACK");
+            } else if (respuesta.slice(2, 4) === "00") {
+              console.log("Es ACK");
+            } else if (respuesta.slice(0, 2) === "01") {
+              console.log("Es NACK");
+            } else
+              console.log(
+                `Codigo ${respuesta.slice(0, 2)} -  ${respuesta.slice(
+                  2,
+                  4
+                )} desconocido`
+              );
+            idSession = respuesta.slice(4, 10);
+            incrementarIdSession();
+            console.log(
+              `idSession recibido = ${respuesta.slice(
+                4,
+                10
+              )} nuevo idSession ${idSession}`
+            );
+          } catch (err) {
+            console.error("Error al enviar GET:", err.message);
+          }
+        }
+        await enviarHex();
+        await ask("Pulse enter para continuar ");
+        option = "";
+        option = "";
+        break;
+    }
   }
-}
-
-enviarHex();
+  console.log("Fin del programa.");
+})();

@@ -12,15 +12,8 @@
  * };
  * a partir de ahí se irá ampliando dependiendo de las funciones
  */
-
+import * as tConst from "./const.js";
 const charPerByte = 2;
-const id = {
-  Autenticacion: "d0",
-  ASK: "c0",
-  LecturaSimple: "a2",
-  LecturaAgrupada: "e0",
-  End: "c2",
-};
 
 /* -------------------------- Auxiliares -------------------------- */
 function esTST(topic) {
@@ -237,15 +230,33 @@ function buildAutenticacion(trama, callStack) {
   id = generarIdUnico(callStack);
   trama.idSessionH = id.slice(0, 2);
   trama.idSessionL = id.slice(2, 4);
+
   callStack.push(trama);
 
-  return buildACK(trama, callStack);
+  let response = buildACK(trama, callStack);
+  trama.lastMessage = response;
+  return response;
 }
 
 function buildEnd(trama, callStack) {
   //quitamos la sesión de la trama, no devolvemos por que es fin de transmisión
   let index = callStack.indexOf((element) => element.topic === trama.topic);
   if (index >= 0) callStack.splice(index, 1);
+}
+function buildLastResponse(trama, callStack) {
+  // console.log("lastResponse");
+  // console.log(trama);
+  // console.log(callStack);
+
+  if (!callStack || callStack.length < 1) return null;
+  let element = callStack.find(
+    (element) =>
+      element.idSessionH === trama.idSessionH &&
+      element.idSessionL === trama.idSessionL
+  );
+
+  if (!element) return null;
+  return element.lastMessage;
 }
 
 function buildACK(trama, callStack) {
@@ -261,8 +272,8 @@ function buildACK(trama, callStack) {
   session.idTrama = trama.idTrama;
 
   let respuesta = {};
-  respuesta.idTrama = "41";
-  respuesta.ack = "00";
+  respuesta.idTrama = tConst.CODE_S_ACK;
+  respuesta.ack = tConst.CODE_OK;
   respuesta.idFrame = session.idFrame;
   respuesta.idSessionH = session.idSessionH;
   respuesta.idSessionL = session.idSessionL;
@@ -270,12 +281,14 @@ function buildACK(trama, callStack) {
   respuesta.value = "";
 
   const cadena = buildTrama(respuesta, false);
-  return cadena + calcularCRC(cadena);
+  let response = cadena + calcularCRC(cadena);
+  session.lastMessage = response;
+  return response;
 }
 function buildNACK(trama) {
   let respuesta = {};
-  respuesta.idTrama = "41";
-  respuesta.ack = "10";
+  respuesta.idTrama = tConst.CODE_S_ACK;
+  respuesta.ack = tConst.CODE_NOK;
   respuesta.idFrame = trama ? trama.idFrame : null;
   respuesta.idSessionH = trama ? trama.idSessionH : null;
   respuesta.idSessionL = trama ? trama.idSessionL : null;
@@ -289,8 +302,8 @@ function buildNACKDesdeMensaje(mensaje) {
     mensaje += "0";
   }
   let respuesta = {};
-  respuesta.idTrama = "41";
-  respuesta.ack = "10";
+  respuesta.idTrama = tConst.CODE_S_ACK;
+  respuesta.ack = tConst.CODE_NOK;
   respuesta.idFrame = mensaje.slice(2 * charPerByte, 3 * charPerByte);
   respuesta.idSessionH = mensaje.slice(3 * charPerByte, 4 * charPerByte);
   respuesta.idSessionL = mensaje.slice(4 * charPerByte, 5 * charPerByte);
@@ -305,7 +318,6 @@ function buildNACKDesdeMensaje(mensaje) {
 /* -------------------------- Contestadores------------------------ */
 
 export {
-  id,
   esTST,
   calcularCRC,
   buildTrama,
@@ -316,6 +328,7 @@ export {
   getTramas,
   buildAutenticacion,
   buildEnd,
+  buildLastResponse,
   buildACK,
   buildNACK,
   buildNACKDesdeMensaje,

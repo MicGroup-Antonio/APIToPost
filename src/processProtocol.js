@@ -1,3 +1,4 @@
+/* ----------------- IMPORTS------------------ */
 import dotenv from "dotenv";
 dotenv.config(); // Carga las variables de .env
 
@@ -10,8 +11,8 @@ if (!configPath) {
 }
 
 const config = require("." + configPath);
+import * as tConst from "./const.js";
 import {
-  id,
   parseTrama,
   buildAutenticacion,
   getName,
@@ -23,6 +24,15 @@ import {
   buildNACKDesdeMensaje,
 } from "./tst.js";
 
+/* --------------- LOG PATHS ----------------- */
+const now = new Date(); // también se usa en la función logger
+const year = now.getFullYear();
+const month = String(now.getMonth() + 1).padStart(2, "0"); // 01-12
+
+const dbLogPath = `./logs/log_${year}_${month}.txt`;
+const detailedLogPath = `./logs/detailedLog_${year}_${month}.txt`;
+
+const separacion = "--------------------------------";
 /* ------------------- DB -------------------- */
 process.env.PGUSER = config.pguser;
 process.env.PGHOST = config.pghost;
@@ -79,11 +89,18 @@ const callStack = [];
 
 /* ------------------- TST ------------------- */
 
+/**
+ * Graba en la base de datos la trama recibida.
+ * Crea un log de la cadena grabada en base de datos: archivo log
+ *
+ * @param {string} topic - Dirección remitente del mensaje.
+ * @param {string} trama - Trama enviada que se almacenará.
+ */
 function inserta(topic, trama) {
   // console.log('Attempting to insert:', topic, trama)
 
   var strSQL =
-    "INSERT into trm_avant.prueba ( value, discriminator, status, topic, plot_date  ) VALUES($1, $2, $3, $4, now()) RETURNING id";
+    "INSERT into trm_avant.complete_plot ( value, discriminator, status, topic, plot_date  ) VALUES($1, $2, $3, $4, now()) RETURNING id";
   var valores = [trama, config.discriminator, "N", topic];
   // console.log(strSQL)
   //console.log(valores)
@@ -108,7 +125,7 @@ function inserta(topic, trama) {
       logEntry += err.code || "UNKNOWN_ERROR";
     }
 
-    fs.appendFile("./log", logEntry + "\n", function (err) {
+    fs.appendFile(dbLogPath, logEntry + "\n", function (err) {
       if (err) {
         console.log("❌ Failed to write to log file:", err.message);
       } else {
@@ -118,56 +135,124 @@ function inserta(topic, trama) {
   });
 }
 
+function logger(logEntry) {
+  var fs = require("fs");
+  const log = now.toString() + " - " + logEntry;
+  fs.appendFile(detailedLogPath, log + "\n", function (err) {
+    if (err) {
+      console.log("❌ Failed to write to log file:", err.message);
+    } else {
+      console.log("📝 Log entry written to file");
+    }
+  });
+}
+
+/**
+ * Función que decodifica el mensaje recibido, y contesta dependiendo del tipo de mensaje
+ *
+ * @param {string} message - trama recibida
+ * @returns
+ */
 async function processTstProtocol(message) {
-  //  console.log(message);
+  logger(separacion);
+
   let respuesta = "";
+  let logEntry = "Received - " + message;
+  logger(logEntry);
+  //Dividimos la trama en su modo más genérico
   let trama = parseTrama(message.toString("hex"));
   console.log(trama);
-  if (!trama || !trama.idTrama) {
-    console.log("Trama fallida");
 
+  //si la trama es fallida devolvemos NACK
+  if (!trama || !trama.idTrama) {
     respuesta = buildNACKDesdeMensaje(message);
+
+    logEntry = "Trama fallida";
+    console.log(logEntry);
+    logger(logEntry);
+    logger(respuesta);
     const buffer = Buffer.from(respuesta, "hex");
     return buffer;
   }
 
+  //buscamos sessionH y sessionL de la trama
   let insertTopic = findName(trama, callStack);
   //  console.log(`insertTopic: ${insertTopic}`);
 
+  //si los identificadores de sesion no están guardados, y no es auth devolvemos NACK
   console.log(`topic: ${insertTopic}`);
   if (
     (!insertTopic || insertTopic.length < 1) &&
-    trama.idTrama.toLowerCase() != id.Autenticacion
+    trama.idTrama.toLowerCase() != tConst.CODE_R_AUTH
   ) {
-    console.log("Origen no encontrado");
     respuesta = buildNACK(trama);
+
+    logEntry = "Origen no encontrado";
+    console.log(logEntry);
+    logger(logEntry);
+    logger(respuesta);
 
     const buffer = Buffer.from(respuesta, "hex");
     console.log("buffer " + buffer);
     return buffer;
   }
 
+  // hasta este punto, los mensajes no están asociados a una trama,
+  // así que no podemos guardarlos para reenviar
+  // a partir de este punto, en trama tendremos un campo .lastMessage, con el último mensaje enviado
+
+  logEntry = "";
+  logEntry += trama.idTrama ? "idTrama - " + trama.idTrama : "" + " | ";
+  logEntry += trama.ack ? "ack - " + trama.ack : "" + " | ";
+  logEntry += trama.idFrame ? "idFrame - " + trama.idFrame : "" + " | ";
+  logEntry += trama.idSessionH
+    ? "idSessionH - " + trama.idSessionH
+    : "" + " | ";
+  logEntry += trama.idSessionL
+    ? "idSessionL - " + trama.idSessionL
+    : "" + " | ";
+  logEntry += trama.size ? "size - " + trama.size : "" + " | ";
+  logEntry += trama.crc ? "crc - " + trama.crc : "" + " | ";
+  logEntry += trama.value ? "value - " + trama.value : "";
+  logger(logEntry);
+
   switch (trama.idTrama ? trama.idTrama.toLowerCase() : undefined) {
-    case id.Autenticacion:
-      console.log("Es Autenticacion");
+    case tConst.CODE_R_AUTH: // Trama de autenticación
       trama.topic = getName(message.toString("hex"));
-      console.log(trama.topic);
+
+      logEntry = "Trama de autenticación " + trama.topic;
+      console.log(logEntry);
+      //      trama=parseAutenticacion(message, trama);
 
       respuesta = buildAutenticacion(trama, callStack);
       break;
-    case id.ASK: // ask
-      console.log("Es ASK");
+    case tConst.CODE_R_ASK: // Trama de petición de configuración
+      logEntry = "Trama de petición de configuración";
+      console.log(logEntry);
 
       respuesta = buildACK(trama, callStack);
       break;
-    case id.LecturaSimple:
-      console.log("Es LecturaSimple");
+    case tConst.CODE_R_INFO: // Trama de información
+      logEntry = "Trama de información";
+      console.log(logEntry);
+
+      respuesta = buildACK(trama, callStack);
+      break;
+    case tConst.CODE_R_RACK: // Trama de petición de reenvío
+      logEntry = "Trama de petición de reenvío";
+      console.log(logEntry);
+      respuesta = buildLastResponse(trama, callStack);
+      break;
+    case tConst.CODE_R_READ: // Trama de lectura sin agrupar
+      logEntry = "Trama de lectura sin agrupar";
+      console.log(logEntry);
 
       inserta(insertTopic, trama.value);
       respuesta = buildACK(trama, callStack);
       break;
-    case id.LecturaAgrupada:
-      console.log("Es LecturaAgrupada");
+    case tConst.CODE_R_GROUP: // Trama de lecturas agrupadas
+      logEntry = "Trama de lecturas agrupadas";
+      console.log(logEntry);
 
       let tramas = getTramas(trama);
       console.log(`tramas recibidas`);
@@ -183,18 +268,29 @@ async function processTstProtocol(message) {
 
       respuesta = buildACK(trama, callStack);
       break;
-    case id.End:
-      console.log("Es Fin de transmisión");
-      buildEnd(trama, callStack);
+    case tConst.CODE_R_FOTA: // Petición de tramas en modo FOTA
+      logEntry = "Petición de tramas en modo FOTA";
+      console.log(logEntry);
+
+      respuesta = buildACK(trama, callStack);
+      break;
+    case tConst.CODE_R_ENDS: // Trama de Fin de Sesión
+      logEntry = "Trama de Fin de Sesión";
+      console.log(logEntry);
+      buildEnd(trama, callStack); //no devuelve, elimina el elemento de la lista de conversaciones
       break;
     default:
-      console.log("Es default");
+      logEntry = "Trama no reconocida";
+      console.log(logEntry);
 
       respuesta = buildNACK(trama);
       break;
   }
 
   if (!respuesta) respuesta = buildNACK(trama);
+
+  logger(logEntry);
+  logger(respuesta);
 
   const buffer = Buffer.from(respuesta, "hex");
   //  console.log("respuesta " + respuesta);
