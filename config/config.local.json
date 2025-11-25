@@ -1,8 +1,8 @@
 {
-  "pguser": "avant_app",
-  "pghost": "localhost",
-  "pgpassword": "123_Avant_123",
-  "pgdatabase": "avant",
+  "pguser": "postgres",
+  "pghost": "postgres17",
+  "pgpassword": "postgres",
+  "pgdatabase": "mic-pro-04",
   "pgport": "5432",
   "discriminator": 3,
   "topic": "#",

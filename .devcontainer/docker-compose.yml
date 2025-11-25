@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ..:/workspace:cached
+    command: sleep infinity
+    # Connect to the same network as your PostgreSQL container (db_default)
+    networks:
+      - postgres-network
+    environment:
+      - CONFIG_PATH=${CONFIG_PATH:-./config/config.local.json}
+      - NODE_ENV=development
+      # Database connection - use PostgreSQL container name (postgres17)
+      - DB_HOST=${POSTGRES_CONTAINER_NAME:-${DB_HOST:-postgres17}}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME:-mic-pro-04}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-123_Avant_123}
+
+# Connect to the same network as the PostgreSQL container
+networks:
+  postgres-network:
+    external: true
+    name: db_default
+
