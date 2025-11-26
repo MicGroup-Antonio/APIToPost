@@ -1,19 +1,19 @@
-import fetch from "node-fetch";
+import dgram from "dgram";
 import { calcularCRC } from "./src/tst.js";
 
 import readline from "readline";
 
-const API_URL_LIST = [
-  "http://mgapi.hostsolucion.com/",
+const HOST_LIST = [
+  "mgapi.hostsolucion.com",
   "localhost",
   "10.0.70.99",
   "104.21.53.141",
   "172.67.213.105",
+  "5.196.166.251",
 ];
-let API_URL = API_URL_LIST[0];
+let HOST = HOST_LIST[0];
+let PORT = 3005;
 let name = "NuevoNombre";
-const PORT = ":3005";
-const http = "http://";
 
 const charPerByte = 2;
 const hexOpciones = {
@@ -116,47 +116,38 @@ hex = modificarTrama(hex, {
       case "1":
         console.clear();
         console.log("Escoge una dirección");
-        API_URL_LIST.forEach((dir, index) => {
+        HOST_LIST.forEach((dir, index) => {
           console.log(index + " " + dir);
         });
-        console.log(API_URL_LIST.length + " Introducción manual");
+        console.log(HOST_LIST.length + " Introducción manual");
         option = await ask("Selecciona una opción: ");
         const optionNumber = Number(option);
         if (
           Number.isNaN(optionNumber) ||
           optionNumber < 0 ||
-          optionNumber > API_URL_LIST.length
+          optionNumber > HOST_LIST.length
         ) {
           console.log("Opción no válida.");
           await ask("Pulse enter para continuar ");
           option = "";
           break;
         }
-        if (optionNumber === API_URL_LIST.length)
-          API_URL = await ask("Introduzca la nueva IP: ");
-        else API_URL = API_URL_LIST[optionNumber];
-        console.log("Desea añadir el puerto 3005?");
+        if (optionNumber === HOST_LIST.length)
+          HOST = await ask("Introduzca la nueva IP/hostname: ");
+        else HOST = HOST_LIST[optionNumber];
+        
+        console.log("Desea usar el puerto 3005?");
         console.log("1 -> si");
         console.log("2 -> introducir manualmente");
-        option = await ask("(cualquier otro valor) -> no ");
-        if (option === "1") API_URL += PORT;
-        else if (option === "2")
-          API_URL += ":" + (await ask("Introduzca el puerto: "));
-        option = await ask(
-          "Desea añadir http:// 1->si (cualquier otro valor)->no "
-        );
-        if (option === "1") API_URL = http + API_URL;
-
-        /*
-        option = await ask(
-          "Desea añadir '/' al final 1->si (cualquier otro valor)->no "
-        );
-        if (option === "1") API_URL += "/";
-        */
-        if (API_URL.slice(API_URL.length - 1) !== "/") API_URL += "/";
-        console.log("la dirección resultante es " + API_URL);
+        option = await ask("(cualquier otro valor) -> mantener actual ");
+        if (option === "1") PORT = 3005;
+        else if (option === "2") {
+          const portInput = await ask("Introduzca el puerto: ");
+          PORT = Number(portInput) || PORT;
+        }
+        
+        console.log(`Configuración: ${HOST}:${PORT}`);
         await ask("Pulse enter para continuar ");
-        option = "";
         option = "";
         break;
       case "2":
@@ -230,42 +221,90 @@ hex = modificarTrama(hex, {
       case "5":
         console.clear();
         console.log(`Enviando ${hex}`);
-        const url = `${API_URL}${encodeURIComponent(hex)}`;
         async function enviarHex() {
-          try {
-            const res = await fetch(url);
-            const buffer = await res.arrayBuffer();
-            const respuesta = Buffer.from(buffer).toString("hex");
-            console.log("Respuesta recibida:");
-            console.log(`respuesta: ${respuesta}`);
-            if (respuesta.slice(0, 2) !== "41") {
-              console.log("No es ACK/NACK");
-            } else if (respuesta.slice(2, 4) === "00") {
-              console.log("Es ACK -- actualizamos idSesion");
-              idSession = respuesta.slice(4, 10);
-              incrementarIdSession();
-            } else if (respuesta.slice(2, 4) === "01") {
-              console.log("Es NACK");
-            } else
+          return new Promise((resolve, reject) => {
+            const client = dgram.createSocket("udp4");
+            const message = Buffer.from(hex, "hex");
+            let responseReceived = false;
+            
+            // Timeout para la respuesta (aumentado para NAT/firewalls)
+            const timeout = setTimeout(() => {
+              if (!responseReceived) {
+                client.close();
+                console.error("Timeout: No se recibió respuesta del servidor");
+                console.log("Esto puede ocurrir si hay NAT/firewalls entre sender y server");
+                resolve();
+              }
+            }, 10000); // 10 segundos para dar tiempo a NAT traversal
+            
+            // Escuchar respuesta
+            client.on("message", (msg, rinfo) => {
+              responseReceived = true;
+              clearTimeout(timeout);
+              const respuesta = msg.toString("hex");
+              console.log(`Respuesta recibida de ${rinfo.address}:${rinfo.port}`);
+              console.log(`respuesta: ${respuesta}`);
+              if (respuesta.slice(0, 2) !== "41") {
+                console.log("No es ACK/NACK");
+              } else if (respuesta.slice(2, 4) === "00") {
+                console.log("Es ACK -- actualizamos idSesion");
+                idSession = respuesta.slice(4, 10);
+                incrementarIdSession();
+              } else if (respuesta.slice(2, 4) === "01") {
+                console.log("Es NACK");
+              } else
+                console.log(
+                  `Codigo ${respuesta.slice(0, 2)} -  ${respuesta.slice(
+                    2,
+                    4
+                  )} desconocido`
+                );
               console.log(
-                `Codigo ${respuesta.slice(0, 2)} -  ${respuesta.slice(
-                  2,
-                  4
-                )} desconocido`
+                `idSession recibido = ${respuesta.slice(
+                  4,
+                  10
+                )} nuevo idSession ${idSession}`
               );
-            console.log(
-              `idSession recibido = ${respuesta.slice(
-                4,
-                10
-              )} nuevo idSession ${idSession}`
-            );
-          } catch (err) {
-            console.error("Error al enviar GET:", err.message);
-          }
+              client.close();
+              resolve();
+            });
+            
+            // Manejar errores
+            client.on("error", (err) => {
+              if (!responseReceived) {
+                clearTimeout(timeout);
+                console.error("Error al enviar UDP:", err.message);
+                client.close();
+                reject(err);
+              }
+            });
+            
+            // Bind el socket primero para que NAT mantenga el mapping
+            // Luego enviar el mensaje
+            client.bind(() => {
+              const address = client.address();
+              console.log(`Socket UDP local: ${address.address}:${address.port}`);
+              console.log(`Enviando a ${HOST}:${PORT}...`);
+              
+              client.send(message, PORT, HOST, (err) => {
+                if (err) {
+                  clearTimeout(timeout);
+                  console.error("Error enviando mensaje:", err.message);
+                  client.close();
+                  reject(err);
+                } else {
+                  console.log(`Mensaje enviado. Esperando respuesta...`);
+                }
+              });
+            });
+          });
         }
-        await enviarHex();
+        try {
+          await enviarHex();
+        } catch (err) {
+          console.error("Error:", err.message);
+        }
         await ask("Pulse enter para continuar ");
-        option = "";
         option = "";
         break;
     }
