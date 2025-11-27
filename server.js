@@ -21,7 +21,7 @@ const server = dgram.createSocket("udp4");
 // Manejar mensajes UDP entrantes
 server.on("message", async (msg, rinfo) => {
   try {
-    console.log(`Mensaje recibido de ${rinfo.address}:${rinfo.port}`);
+    console.log(`[${new Date().toISOString()}] Mensaje recibido de IP: ${rinfo.address}:${rinfo.port}`);
     console.log(`Datos recibidos: ${msg.toString("hex")}`);
 
     let response = await processTstProtocol(msg);
