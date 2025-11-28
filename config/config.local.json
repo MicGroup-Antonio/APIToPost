@@ -12,5 +12,6 @@
     "SIGFOX": 2,
     "INETCOUNTERS": 1
   },
-  "arrDiscriminatorRV": ["MQTT", "INETCOUNTERS", "SIGFOX", "WMBUS"]
+  "arrDiscriminatorRV": ["MQTT", "INETCOUNTERS", "SIGFOX", "WMBUS"],
+  "sessionCleanupIntervalMinutes": 1
 }

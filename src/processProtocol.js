@@ -23,6 +23,17 @@ import {
   buildNACK,
   buildNACKDesdeMensaje,
 } from "./tst.js";
+import {
+  activeSessions,
+  getSessionKey,
+  createOrUpdateSession,
+  updateSessionFrameId,
+  removeSession,
+  getSession,
+  sessionExists,
+  generateSequentialSessionId,
+  initializeSessionManager,
+} from "./sessionManager.js";
 
 /* --------------- LOG PATHS ----------------- */
 const now = new Date(); // también se usa en la función logger
@@ -72,6 +83,10 @@ pool.connect((err, client, release) => {
   }
 });
 /* ------------------- DB -------------------- */
+
+/* ------------------- SESSION MANAGEMENT INIT ------------------- */
+// Initialize session manager with config
+initializeSessionManager(config);
 
 /* ------------------- TST ------------------- */
 let trama = {
@@ -224,7 +239,28 @@ async function processTstProtocol(message) {
       console.log(logEntry);
       //      trama=parseAutenticacion(message, trama);
 
-      respuesta = buildAutenticacion(trama, callStack);
+      respuesta = buildAutenticacion(trama, callStack, generateSequentialSessionId);
+      
+      if (!respuesta) {
+        // Failed to generate session ID
+        logEntry = "Error: Failed to generate session ID";
+        console.error(logEntry);
+        logger(logEntry);
+        respuesta = buildNACK(trama);
+        break;
+      }
+      
+      // After authentication, session IDs are assigned in buildAutenticacion
+      // Create or update the session entry in activeSessions dictionary
+      const sessionKey = createOrUpdateSession(
+        trama.idSessionH,
+        trama.idSessionL,
+        trama.idFrame
+      );
+      if (sessionKey) {
+        const session = getSession(trama.idSessionH, trama.idSessionL);
+        logEntry += ` | Session: ${sessionKey}, FrameId: ${session?.lastFrameId || "00"}`;
+      }
       break;
     case tConst.CODE_R_ASK: // Trama de petición de configuración
       logEntry = "Trama de petición de configuración";
@@ -278,6 +314,13 @@ async function processTstProtocol(message) {
       logEntry = "Trama de Fin de Sesión";
       console.log(logEntry);
       buildEnd(trama, callStack); //no devuelve, elimina el elemento de la lista de conversaciones
+      
+      // Remove session from activeSessions dictionary
+      const removed = removeSession(trama.idSessionH, trama.idSessionL);
+      if (removed) {
+        const sessionKey = getSessionKey(trama.idSessionH, trama.idSessionL);
+        logEntry += ` | Session removed: ${sessionKey}`;
+      }
       break;
     default:
       logEntry = "Trama no reconocida";
@@ -289,6 +332,12 @@ async function processTstProtocol(message) {
 
   if (!respuesta) respuesta = buildNACK(trama);
 
+  // Update last frame ID for non-authentication messages if session exists
+  // (Session validation will be added in a later step)
+  if (trama.idTrama && trama.idTrama.toLowerCase() !== tConst.CODE_R_AUTH) {
+    updateSessionFrameId(trama.idSessionH, trama.idSessionL, trama.idFrame);
+  }
+
   logger(logEntry);
   logger(respuesta);
 
@@ -298,6 +347,7 @@ async function processTstProtocol(message) {
   //  console.log(`Enviada respuesta a ${topicRespuesta}, callstack:`);
   console.log("callStack");
   console.log(callStack);
+  console.log("activeSessions:", activeSessions);
   return buffer;
 }
 

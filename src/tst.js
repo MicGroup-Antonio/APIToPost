@@ -220,16 +220,21 @@ function getTramas(grupoDeTramas) {
 /* -------------------------- Parseadores-------------------------- */
 
 /* -------------------------- Contestadores------------------------ */
-function buildAutenticacion(trama, callStack) {
+function buildAutenticacion(trama, callStack, generateSequentialSessionId) {
   //si ya estaba autenticado, borro la sesión para empezar de nuevo
   let index = callStack.indexOf((element) => element.topic === trama.topic);
   if (index >= 0) callStack.splice(index, 1);
 
-  //miramos si ya estaba la trama en el callstack (no recibieron confirmación)
-  let id = "";
-  id = generarIdUnico(callStack);
-  trama.idSessionH = id.slice(0, 2);
-  trama.idSessionL = id.slice(2, 4);
+  // Generate sequential session ID from server
+  // Session ID is a 2-byte number split into high (H) and low (L) bytes
+  const sessionIds = generateSequentialSessionId();
+  if (!sessionIds) {
+    console.error("❌ Failed to generate session ID for authentication");
+    return null;
+  }
+  
+  trama.idSessionH = sessionIds.idSessionH;
+  trama.idSessionL = sessionIds.idSessionL;
 
   callStack.push(trama);
 
