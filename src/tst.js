@@ -106,7 +106,9 @@ function buildTrama(trama, incluyeCRC = true) {
 /**
  * Recibe una cadena y divide la trama en los valores correspondientes
  * @param String cadena
- * @returns { idTrama, ack, idFrame, idSessionH, idSessionL, size, value, crc }
+ * @returns { success: boolean, trama: object | null, error: string | null }
+ *          On success: { success: true, trama: {...}, error: null }
+ *          On failure: { success: false, trama: null, error: "error message" }
  */
 function parseTrama(cadena) {
   const trama = {};
@@ -131,14 +133,27 @@ function parseTrama(cadena) {
   offset += sizeValue;
 
   trama.crc = cadena.substr(offset, 2 * charPerByte);
-  // console.log({
-  //   sizeStr: trama.size,
-  //   sizeValue,
-  //   valueLength: trama.value.length,
-  //   remaining: cadena.length - offset,
-  // });
-  if (trama.crc == calcularCRC(cadena.substr(0, offset))) return trama;
-  return null;
+  
+  // Validate CRC
+  const frameWithoutCrc = cadena.substr(0, offset);
+  const expectedCrc = calcularCRC(frameWithoutCrc);
+  const receivedCrc = trama.crc.toLowerCase();
+  const expectedCrcLower = expectedCrc.toLowerCase();
+  
+  if (receivedCrc !== expectedCrcLower) {
+    const errorMessage = `CRC validation failed: expected ${expectedCrcLower}, received ${receivedCrc}. Frame type: ${trama.idTrama}, Frame ID: ${trama.idFrame}, Session: ${trama.idSessionH}${trama.idSessionL}`;
+    return {
+      success: false,
+      trama: null,
+      error: errorMessage
+    };
+  }
+  
+  return {
+    success: true,
+    trama: trama,
+    error: null
+  };
 }
 
 function parseAutenticacion(cadena, trama) {
@@ -204,12 +219,24 @@ function getTramas(grupoDeTramas) {
   //  console.log(`totalSize: ${totalSize}`);
 
   while (offset < totalSize) {
-    const actual = parseTrama(grupoDeTramas.value.substr(offset));
-    response.push(actual);
-
-    const sizeValue = getSizeFromLittleEndian(actual.size);
-    //sizeValue quita exactamente los caracteres de Value, tenemos que quitar la cabecera y el crc además de sizeValue
-    offset += (7 + 2) * charPerByte + sizeValue;
+    const parseResult = parseTrama(grupoDeTramas.value.substr(offset));
+    
+    // Only process successfully parsed tramas
+    if (parseResult.success && parseResult.trama) {
+      response.push(parseResult.trama);
+      const sizeValue = getSizeFromLittleEndian(parseResult.trama.size);
+      //sizeValue quita exactamente los caracteres de Value, tenemos que quitar la cabecera y el crc además de sizeValue
+      offset += (7 + 2) * charPerByte + sizeValue;
+    } else {
+      // If parsing fails, log error and break to avoid infinite loop
+      if (parseResult.error) {
+        console.error(`❌ Error parsing grouped trama at offset ${offset}: ${parseResult.error}`);
+      } else {
+        console.error(`❌ Error parsing grouped trama at offset ${offset}: Invalid frame structure`);
+      }
+      // Break to avoid infinite loop if we can't parse the frame
+      break;
+    }
 
     // console.log(actual);
     // console.log(`offset: ${offset}`);

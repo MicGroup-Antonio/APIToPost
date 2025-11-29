@@ -15,6 +15,17 @@ let HOST = HOST_LIST[0];
 let PORT = 3005;
 let name = "NuevoNombre";
 
+// Device state - mimics real device behavior
+let deviceState = {
+  sessionH: "00",      // Session High byte (from server)
+  sessionL: "00",      // Session Low byte (from server)
+  frameId: "00",       // Current frame ID (increments with each message)
+  authenticated: false, // Whether device is authenticated
+};
+
+// Out-of-order testing mode: when true, frame ID won't auto-increment after sending
+let outOfOrderTestingMode = false;
+
 const charPerByte = 2;
 const hexOpciones = {
   auth: "d00000000067003836313531383034303937363837390000000000007573657200000000000000000000000000000000007061737300000000000000000000000000000000004e6f6d627265416c417a6172000000000000000000000000000000000000000000000000000000009081",
@@ -35,39 +46,84 @@ function asciiToHexRellenado(str, lengthBytes) {
   return Buffer.concat([buf, relleno]).toString("hex");
 }
 
-function modificarTrama(baseHex, { idSession, name }) {
-  console.log("modificarTrama " + idSession + " " + name);
-
+/**
+ * Modifies a frame with current session ID and frame ID
+ * @param {string} baseHex - Base hex frame
+ * @param {string} name - Optional name for authentication frames
+ * @returns {string} Modified hex frame
+ */
+function modificarTrama(baseHex, name = null) {
   let trama = "";
-  trama += baseHex.slice(0 * charPerByte, 2 * charPerByte);
-  trama += idSession;
+  
+  // Byte 0: Frame type (keep original) - 1 byte = 2 hex chars
+  trama += baseHex.slice(0 * charPerByte, 1 * charPerByte);
+  
+  // Byte 1: ACK status (keep original) - 1 byte = 2 hex chars
+  trama += baseHex.slice(1 * charPerByte, 2 * charPerByte);
+  
+  // Byte 2: Frame ID (use current device frame ID) - 1 byte = 2 hex chars
+  trama += deviceState.frameId;
+  
+  // Byte 3: Session H (use current device session) - 1 byte = 2 hex chars
+  trama += deviceState.sessionH;
+  
+  // Byte 4: Session L (use current device session) - 1 byte = 2 hex chars
+  trama += deviceState.sessionL;
+  
+  // Rest of the frame (from byte 5 onwards: size, value, and old CRC)
   if (name && name.length > 0) {
+    // For authentication frames, insert name at offset 70 (byte 70 = 140 hex chars)
     trama += baseHex.slice(5 * charPerByte, 70 * charPerByte);
     trama += asciiToHexRellenado(name, 40);
     trama += baseHex.slice(110 * charPerByte);
   } else {
+    // For non-auth frames, get everything from byte 5 onwards (includes size, value, and old CRC)
     trama += baseHex.slice(5 * charPerByte);
   }
-  // Recalcular CRC (últimos 2 bytes)
-  trama = trama.slice(0, -4);
-  const crc = calcularCRC(trama);
-  trama = trama + crc;
+  
+  // Recalculate CRC: remove old CRC (last 4 hex chars = 2 bytes) and calculate new one
+  const frameWithoutCrc = trama.slice(0, -4);
+  const crc = calcularCRC(frameWithoutCrc);
+  trama = frameWithoutCrc + crc;
 
   return trama.toLowerCase();
 }
 
-function incrementarIdSession() {
-  // Obtener los dos primeros caracteres como número hexadecimal
-  const hexa = idSession.substring(0, 2);
+/**
+ * Increments the frame ID (wraps around at 255)
+ */
+function incrementFrameId() {
+  let num = parseInt(deviceState.frameId, 16);
+  num = (num + 1) % 256; // Wrap at 255 (0xFF)
+  deviceState.frameId = num.toString(16).toLowerCase().padStart(2, "0");
+}
 
-  // Convertir a entero base 16, sumar 1
-  let num = parseInt(hexa, 16) + 1;
-
-  // Convertir otra vez a hex y asegurarse de que quede en dos caracteres
-  const nuevoHex = num.toString(16).toUpperCase().padStart(2, "0");
-
-  // Reconstruir la idSession
-  idSession = nuevoHex + idSession.substring(2);
+/**
+ * Extracts and updates session ID and frame ID from ACK response
+ * ACK response format: [idTrama(2)][ack(2)][idFrame(2)][sessionH(2)][sessionL(2)]...
+ * @param {string} respuestaHex - ACK response in hex format
+ */
+function updateDeviceStateFromResponse(respuestaHex) {
+  if (respuestaHex.length < 10) {
+    console.warn("⚠️ Response too short to extract session info");
+    return;
+  }
+  
+  // Extract frame ID (byte 2, positions 4-5 in hex string)
+  const frameId = respuestaHex.slice(4, 6);
+  
+  // Extract session H (byte 3, positions 6-7 in hex string)
+  const sessionH = respuestaHex.slice(6, 8);
+  
+  // Extract session L (byte 4, positions 8-9 in hex string)
+  const sessionL = respuestaHex.slice(8, 10);
+  
+  // Update device state
+  deviceState.frameId = frameId;
+  deviceState.sessionH = sessionH;
+  deviceState.sessionL = sessionL;
+  
+  console.log(`📱 Device state updated: FrameID=${frameId}, Session=${sessionH}${sessionL}`);
 }
 
 function ask(question) {
@@ -93,12 +149,11 @@ const hexKeysByIndex = [
   "fallo",
   "end",
 ];
+
+// Initialize with authentication frame
+let currentMessageType = "auth";
 let hex = hexOpciones["auth"].toLowerCase();
-let idSession = "000000";
-hex = modificarTrama(hex, {
-  idSession,
-  name,
-});
+// Will be modified when sending, not here
 (async () => {
   let option = "";
 
@@ -109,6 +164,7 @@ hex = modificarTrama(hex, {
     console.log("3 modificar numero o id");
     console.log("4 Cambiar nombre de remitente");
     console.log("5 enviar");
+    console.log("6 modo prueba out-of-order (sobrescribir Frame ID)");
     console.log("0 salir");
     option = await ask("Selecciona una opción: ");
 
@@ -168,47 +224,62 @@ hex = modificarTrama(hex, {
           break;
         }
         const hexKey = hexKeysByIndex[idx];
+        currentMessageType = hexKey;
         hex = hexOpciones[hexKey].toLowerCase();
-        let named = idx === 0 ? name : null;
-        // console.log({ name, named, idx });
-        hex = modificarTrama(hex, {
-          idSession,
-          name: named,
-        });
+        
+        // For authentication, reset frame ID to 00
+        if (hexKey === "auth") {
+          deviceState.frameId = "00";
+          deviceState.authenticated = false;
+          deviceState.sessionH = "00";
+          deviceState.sessionL = "00";
+        }
+        
         console.log(`Seleccionado: ${hexKey}`);
+        console.log(`   Frame ID actual: ${deviceState.frameId}`);
+        console.log(`   Session actual: ${deviceState.sessionH}${deviceState.sessionL}`);
+        console.log(`   (Se actualizará al enviar con los valores actuales del dispositivo)`);
         await ask("Pulse enter para continuar ");
         option = "";
         break;
       case "3":
         console.clear();
-        console.log(
-          `Numero actual = ${idSession.substring(
-            0,
-            2
-          )} id de sesión actual = ${idSession.substring(2, 6)}`
+        console.log(`Estado actual del dispositivo:`);
+        console.log(`   Frame ID: ${deviceState.frameId}`);
+        console.log(`   Session: ${deviceState.sessionH}${deviceState.sessionL}`);
+        console.log(`   Autenticado: ${deviceState.authenticated ? "Sí" : "No"}`);
+        console.log(`   Modo out-of-order: ${outOfOrderTestingMode ? "✅ ACTIVO" : "❌ INACTIVO"}`);
+        console.log(`\nNota: El Frame ID y Session se actualizan automáticamente desde las respuestas del servidor.`);
+        console.log(`Solo modifique manualmente si es necesario para pruebas.`);
+        if (outOfOrderTestingMode) {
+          console.log(`\n⚠️  Modo out-of-order activo: El Frame ID NO se incrementará automáticamente.`);
+          console.log(`   Use la opción 6 para gestionar el modo out-of-order.`);
+        }
+        
+        let newFrameId = await ask(
+          "Introduzca nuevo Frame ID (hex, 2 chars, vacío para mantener): "
         );
-        let newNumber = await ask(
-          "Introduzca el nuevo número (deje vacía para mantener el mismo)"
+        let newSessionH = await ask(
+          "Introduzca nuevo Session H (hex, 2 chars, vacío para mantener): "
         );
-        let newSession = await ask(
-          "Introduzca la nueva sesión (deje vacía para mantener la misma)"
+        let newSessionL = await ask(
+          "Introduzca nuevo Session L (hex, 2 chars, vacío para mantener): "
         );
-        newNumber =
-          newNumber.length > 0 ? newNumber : idSession.substring(0, 2);
-
-        newSession =
-          newSession.length > 0 ? newSession : idSession.substring(2, 6);
-        idSession = newNumber + newSession;
-
-        console.log(`los datos resultantes son:)`);
-        console.log(
-          `numero ${idSession.substring(
-            0,
-            2
-          )} id de sesión = ${idSession.substring(2, 6)}`
-        );
+        
+        if (newFrameId.length === 2) {
+          deviceState.frameId = newFrameId.toLowerCase();
+        }
+        if (newSessionH.length === 2) {
+          deviceState.sessionH = newSessionH.toLowerCase();
+        }
+        if (newSessionL.length === 2) {
+          deviceState.sessionL = newSessionL.toLowerCase();
+        }
+        
+        console.log(`Estado actualizado:`);
+        console.log(`   Frame ID: ${deviceState.frameId}`);
+        console.log(`   Session: ${deviceState.sessionH}${deviceState.sessionL}`);
         await ask("Pulse enter para continuar ");
-        option = "";
         option = "";
         break;
       case "4":
@@ -218,9 +289,77 @@ hex = modificarTrama(hex, {
         await ask("Pulse enter para continuar ");
         break;
 
+      case "6":
+        console.clear();
+        console.log("═══════════════════════════════════════════════════════");
+        console.log("  MODO PRUEBA OUT-OF-ORDER (Paquetes fuera de orden)");
+        console.log("═══════════════════════════════════════════════════════");
+        console.log("");
+        console.log(`Estado actual:`);
+        console.log(`   Frame ID actual: ${deviceState.frameId}`);
+        console.log(`   Session: ${deviceState.sessionH}${deviceState.sessionL}`);
+        console.log(`   Modo out-of-order: ${outOfOrderTestingMode ? "✅ ACTIVO" : "❌ INACTIVO"}`);
+        console.log("");
+        console.log("Este modo permite:");
+        console.log("  • Sobrescribir el Frame ID manualmente");
+        console.log("  • Enviar paquetes con Frame IDs fuera de secuencia");
+        console.log("  • El Frame ID NO se incrementa automáticamente después de enviar");
+        console.log("");
+        console.log("Útil para probar:");
+        console.log("  • Detección de paquetes fuera de orden");
+        console.log("  • Manejo de Frame IDs duplicados");
+        console.log("  • Validación de secuencia en el servidor");
+        console.log("");
+        
+        const toggleMode = await ask(
+          `¿Activar modo out-of-order? (s/n, actual: ${outOfOrderTestingMode ? "activo" : "inactivo"}): `
+        );
+        if (toggleMode.toLowerCase() === "s" || toggleMode.toLowerCase() === "si" || toggleMode.toLowerCase() === "y" || toggleMode.toLowerCase() === "yes") {
+          outOfOrderTestingMode = true;
+          console.log("✅ Modo out-of-order ACTIVADO");
+        } else if (toggleMode.toLowerCase() === "n" || toggleMode.toLowerCase() === "no") {
+          outOfOrderTestingMode = false;
+          console.log("❌ Modo out-of-order DESACTIVADO");
+        }
+        
+        if (outOfOrderTestingMode) {
+          console.log("");
+          const manualFrameId = await ask(
+            `Introduzca Frame ID manual (hex, 2 chars, vacío para mantener ${deviceState.frameId}): `
+          );
+          if (manualFrameId.length === 2) {
+            const oldFrameId = deviceState.frameId;
+            deviceState.frameId = manualFrameId.toLowerCase();
+            console.log(`✅ Frame ID cambiado: ${oldFrameId} → ${deviceState.frameId}`);
+          }
+          
+          console.log("");
+          console.log("⚠️  RECORDATORIO:");
+          console.log("   • El Frame ID NO se incrementará automáticamente");
+          console.log("   • Debe cambiar manualmente el Frame ID (opción 6) para cada envío");
+          console.log("   • Use esto para enviar paquetes con Frame IDs fuera de secuencia");
+        }
+        
+        await ask("Pulse enter para continuar ");
+        option = "";
+        break;
+
       case "5":
         console.clear();
-        console.log(`Enviando ${hex}`);
+        
+        // Update frame with current device state before sending
+        const baseHex = hexOpciones[currentMessageType].toLowerCase();
+        hex = modificarTrama(baseHex, currentMessageType === "auth" ? name : null);
+        
+        console.log(`📤 Enviando mensaje:`);
+        console.log(`   Tipo: ${currentMessageType}`);
+        console.log(`   Frame ID: ${deviceState.frameId}${outOfOrderTestingMode ? " (modo out-of-order)" : ""}`);
+        console.log(`   Session: ${deviceState.sessionH}${deviceState.sessionL}`);
+        if (outOfOrderTestingMode) {
+          console.log(`   ⚠️  Modo out-of-order: Frame ID NO se incrementará automáticamente`);
+        }
+        console.log(`   Hex: ${hex}`);
+        
         async function enviarHex() {
           return new Promise((resolve, reject) => {
             const client = dgram.createSocket("udp4");
@@ -242,29 +381,42 @@ hex = modificarTrama(hex, {
               responseReceived = true;
               clearTimeout(timeout);
               const respuesta = msg.toString("hex");
-              console.log(`Respuesta recibida de ${rinfo.address}:${rinfo.port}`);
-              console.log(`respuesta: ${respuesta}`);
+              console.log(`\n📥 Respuesta recibida de ${rinfo.address}:${rinfo.port}`);
+              console.log(`   Hex: ${respuesta}`);
+              
               if (respuesta.slice(0, 2) !== "41") {
-                console.log("No es ACK/NACK");
+                console.log("⚠️ No es ACK/NACK (código: " + respuesta.slice(0, 2) + ")");
               } else if (respuesta.slice(2, 4) === "00") {
-                console.log("Es ACK -- actualizamos idSesion");
-                idSession = respuesta.slice(4, 10);
-                incrementarIdSession();
+                console.log("✅ Es ACK");
+                
+                // Update device state from server response
+                updateDeviceStateFromResponse(respuesta);
+                
+                // Increment frame ID for next message (unless in out-of-order testing mode)
+                if (!outOfOrderTestingMode) {
+                  incrementFrameId();
+                  console.log(`📱 Próximo Frame ID: ${deviceState.frameId}`);
+                } else {
+                  console.log(`⚠️ Modo out-of-order activo: Frame ID NO se incrementó automáticamente`);
+                  console.log(`   Frame ID actual: ${deviceState.frameId}`);
+                  console.log(`   (Use opción 6 para cambiar el Frame ID manualmente)`);
+                }
+                
+                // Mark as authenticated if this was auth response
+                if (currentMessageType === "auth") {
+                  deviceState.authenticated = true;
+                  console.log("🔐 Dispositivo autenticado");
+                }
               } else if (respuesta.slice(2, 4) === "01") {
-                console.log("Es NACK");
-              } else
+                console.log("❌ Es NACK - El servidor rechazó el mensaje");
+                console.log(`   Frame ID enviado: ${deviceState.frameId}`);
+                console.log(`   Session: ${deviceState.sessionH}${deviceState.sessionL}`);
+              } else {
                 console.log(
-                  `Codigo ${respuesta.slice(0, 2)} -  ${respuesta.slice(
-                    2,
-                    4
-                  )} desconocido`
+                  `⚠️ Código desconocido: ${respuesta.slice(0, 2)} - ${respuesta.slice(2, 4)}`
                 );
-              console.log(
-                `idSession recibido = ${respuesta.slice(
-                  4,
-                  10
-                )} nuevo idSession ${idSession}`
-              );
+              }
+              
               client.close();
               resolve();
             });

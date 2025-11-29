@@ -4,7 +4,8 @@
  * Key: sessionId (idSessionH + idSessionL as hex string)
  * Value: { 
  *   lastFrameId: string,      // last frame ID received for this session
- *   lastActivity: number       // timestamp of last activity (milliseconds since epoch)
+ *   lastActivity: number,     // timestamp of last activity (milliseconds since epoch)
+ *   waitingForAsk: boolean     // true if session just authenticated and is waiting for ASK frame
  * }
  */
 const activeSessions = {};
@@ -66,8 +67,9 @@ function createOrUpdateSession(idSessionH, idSessionL, frameId) {
   activeSessions[sessionKey] = {
     lastFrameId: frameId || "00",
     lastActivity: now,
+    waitingForAsk: true, // After authentication, must receive ASK next
   };
-  console.log(`✅ Session created/updated: ${sessionKey}, lastFrameId: ${activeSessions[sessionKey].lastFrameId}, lastActivity: ${new Date(now).toISOString()}`);
+  console.log(`✅ Session created/updated: ${sessionKey}, lastFrameId: ${activeSessions[sessionKey].lastFrameId}, lastActivity: ${new Date(now).toISOString()}, waitingForAsk: true`);
   
   // Start cleanup interval if not already running
   startSessionCleanup();
@@ -94,6 +96,36 @@ function updateSessionFrameId(idSessionH, idSessionL, frameId) {
   activeSessions[sessionKey].lastActivity = now;
   console.log(`📝 Updated session ${sessionKey}, lastFrameId: ${frameId}, lastActivity: ${new Date(now).toISOString()}`);
   return true;
+}
+
+/**
+ * Clears the waitingForAsk flag for a session
+ * Called after receiving ASK frame following authentication
+ * @param {string} idSessionH - Session High byte
+ * @param {string} idSessionL - Session Low byte
+ * @returns {boolean} True if flag was cleared, false otherwise
+ */
+function clearWaitingForAsk(idSessionH, idSessionL) {
+  const sessionKey = getSessionKey(idSessionH, idSessionL);
+  if (!sessionKey || !activeSessions[sessionKey]) return false;
+
+  if (activeSessions[sessionKey].waitingForAsk) {
+    activeSessions[sessionKey].waitingForAsk = false;
+    console.log(`✅ Session ${sessionKey} received ASK, cleared waitingForAsk flag`);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Checks if a session is waiting for ASK frame after authentication
+ * @param {string} idSessionH - Session High byte
+ * @param {string} idSessionL - Session Low byte
+ * @returns {boolean} True if session is waiting for ASK, false otherwise
+ */
+function isWaitingForAsk(idSessionH, idSessionL) {
+  const session = getSession(idSessionH, idSessionL);
+  return session ? (session.waitingForAsk === true) : false;
 }
 
 /**
@@ -282,5 +314,7 @@ export {
   startSessionCleanup,
   stopSessionCleanup,
   initializeSessionManager,
+  clearWaitingForAsk,
+  isWaitingForAsk,
 };
 

@@ -23,6 +23,8 @@ import {
   buildNACK,
   buildNACKDesdeMensaje,
   parseAutenticacion,
+  buildTrama,
+  calcularCRC,
 } from "./tst.js";
 import {
   activeSessions,
@@ -34,6 +36,8 @@ import {
   sessionExists,
   generateSequentialSessionId,
   initializeSessionManager,
+  clearWaitingForAsk,
+  isWaitingForAsk,
 } from "./sessionManager.js";
 
 /* --------------- LOG PATHS ----------------- */
@@ -238,20 +242,28 @@ async function processTstProtocol(message) {
   let logEntry = "Received - " + message;
   logger(logEntry);
   //Dividimos la trama en su modo más genérico
-  let trama = parseTrama(message.toString("hex"));
-  console.log(trama);
-
-  //si la trama es fallida devolvemos NACK
-  if (!trama || !trama.idTrama) {
+  const parseResult = parseTrama(message.toString("hex"));
+  
+  // Check if parsing was successful
+  if (!parseResult.success || !parseResult.trama || !parseResult.trama.idTrama) {
     respuesta = buildNACKDesdeMensaje(message);
-
-    logEntry = "Trama fallida";
-    console.log(logEntry);
+    
+    // Log meaningful error message
+    if (parseResult.error) {
+      logEntry = `❌ Frame parsing failed: ${parseResult.error}`;
+    } else {
+      logEntry = "❌ Frame parsing failed: Invalid frame structure";
+    }
+    console.error(logEntry);
     logger(logEntry);
     logger(respuesta);
     const buffer = Buffer.from(respuesta, "hex");
     return buffer;
   }
+  
+  // Extract trama from successful parse result
+  let trama = parseResult.trama;
+  console.log(trama);
 
   //buscamos sessionH y sessionL de la trama
   let insertTopic = findName(trama, callStack);
@@ -273,6 +285,24 @@ async function processTstProtocol(message) {
     const buffer = Buffer.from(respuesta, "hex");
     console.log("buffer " + buffer);
     return buffer;
+  }
+
+  // Check if session is waiting for ASK after authentication
+  // If waiting for ASK and frame is not ASK, discard it
+  if (
+    trama.idSessionH &&
+    trama.idSessionL &&
+    trama.idTrama.toLowerCase() !== tConst.CODE_R_AUTH &&
+    isWaitingForAsk(trama.idSessionH, trama.idSessionL)
+  ) {
+    if (trama.idTrama.toLowerCase() !== tConst.CODE_R_ASK) {
+      logEntry = `❌ Invalid frame after authentication: expected ASK (${tConst.CODE_R_ASK}), got ${trama.idTrama}`;
+      console.error(logEntry);
+      logger(logEntry);
+      respuesta = buildNACK(trama);
+      const buffer = Buffer.from(respuesta, "hex");
+      return buffer;
+    }
   }
 
   // hasta este punto, los mensajes no están asociados a una trama,
@@ -342,7 +372,28 @@ async function processTstProtocol(message) {
       logEntry = "Trama de petición de configuración";
       console.log(logEntry);
 
+      // Clear waitingForAsk flag if this is the ASK after authentication
+      if (trama.idSessionH && trama.idSessionL) {
+        clearWaitingForAsk(trama.idSessionH, trama.idSessionL);
+      }
+
+      // ASK always gets ACK response
       respuesta = buildACK(trama, callStack);
+      if (!respuesta) {
+        // If buildACK returns null (session not in callStack), create ACK anyway
+        // This shouldn't happen after authentication, but ensures ASK always gets ACK
+        console.warn("⚠️ Session not found in callStack for ASK, creating ACK anyway");
+        let ackResponse = {};
+        ackResponse.idTrama = tConst.CODE_S_ACK;
+        ackResponse.ack = tConst.CODE_OK;
+        ackResponse.idFrame = trama.idFrame || "00";
+        ackResponse.idSessionH = trama.idSessionH || "00";
+        ackResponse.idSessionL = trama.idSessionL || "00";
+        ackResponse.size = "0000";
+        ackResponse.value = "";
+        const cadena = buildTrama(ackResponse, false);
+        respuesta = cadena + calcularCRC(cadena);
+      }
       break;
     case tConst.CODE_R_INFO: // Trama de información
       logEntry = "Trama de información";
