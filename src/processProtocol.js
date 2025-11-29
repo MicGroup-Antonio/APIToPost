@@ -258,6 +258,52 @@ function processAskFrame(trama) {
 }
 
 /**
+ * Calculates the expected next frame ID (increments and wraps at 255)
+ * @param {string} lastFrameId - Last frame ID received (2 hex chars, e.g., "00", "FF")
+ * @returns {string} Expected next frame ID (2 hex chars)
+ */
+function getExpectedNextFrameId(lastFrameId) {
+  if (!lastFrameId) return "01"; // If no last frame ID, first expected is 01 (after auth with 00)
+  
+  let num = parseInt(lastFrameId, 16);
+  num = (num + 1) % 256; // Increment and wrap at 255 (0xFF)
+  return num.toString(16).toLowerCase().padStart(2, "0");
+}
+
+/**
+ * Validates if a frame ID is in order (matches expected next frame ID)
+ * @param {object} trama - Parsed frame object
+ * @returns {boolean} True if frame ID is in order, false if out of order
+ */
+function validateFrameIdOrder(trama) {
+  // Authentication frames always use frame ID "00" - no order check needed
+  if (trama.idTrama && trama.idTrama.toLowerCase() === tConst.CODE_R_AUTH) {
+    return true;
+  }
+
+  // Get session to check last frame ID
+  if (!trama.idSessionH || !trama.idSessionL) {
+    return false; // No session ID, will be caught by other validation
+  }
+
+  const session = getSession(trama.idSessionH, trama.idSessionL);
+  if (!session) {
+    return false; // No session, will be caught by other validation
+  }
+
+  const lastFrameId = session.lastFrameId || "00";
+  const expectedFrameId = getExpectedNextFrameId(lastFrameId);
+  const receivedFrameId = (trama.idFrame || "00").toLowerCase();
+
+  if (receivedFrameId !== expectedFrameId) {
+    console.warn(`⚠️ Frame ID out of order: expected ${expectedFrameId}, received ${receivedFrameId} (Session: ${trama.idSessionH}${trama.idSessionL}, Last: ${lastFrameId})`);
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Validates if a frame requires an active session
  * Non-authentication frames must have an active session, otherwise they are discarded
  * @param {object} trama - Parsed frame object
@@ -381,6 +427,16 @@ async function processTstProtocol(message) {
   // If validation fails, discard frame silently (no response)
   if (!validateFrameRequiresActiveSession(trama)) {
     logEntry = `🚫 Frame discarded: No active session (Frame type: ${trama.idTrama}, Session: ${trama.idSessionH || "??"}${trama.idSessionL || "??"})`;
+    console.warn(logEntry);
+    logger(logEntry);
+    // Return null to indicate no response should be sent
+    return null;
+  }
+
+  // Validate frame ID order (check for out-of-order frames)
+  // If validation fails, discard frame silently (no response)
+  if (!validateFrameIdOrder(trama)) {
+    logEntry = `🚫 Frame discarded: Frame ID out of order (Frame type: ${trama.idTrama}, Session: ${trama.idSessionH}${trama.idSessionL}, Frame ID: ${trama.idFrame})`;
     console.warn(logEntry);
     logger(logEntry);
     // Return null to indicate no response should be sent
