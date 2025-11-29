@@ -168,12 +168,99 @@ function logger(logEntry) {
 }
 
 /**
- * Validates an authentication frame before creating a session
+ * Processes an authentication frame
  * @param {object} trama - Parsed frame object
- * @param {string} messageHex - Complete message in hex format
+ * @param {Buffer} message - Original message buffer
  * @param {object} config - Server configuration
- * @returns {{valid: boolean, reason: string}} Validation result
+ * @param {array} callStack - Call stack for session management
+ * @returns {object} { respuesta: string, logEntry: string }
  */
+function processAuthenticationFrame(trama, message, config, callStack) {
+  let respuesta = "";
+  let logEntry = "";
+
+  // Validate authentication frame before processing
+  const authValidation = validateAuthenticationFrame(trama, message.toString("hex"), config);
+  
+  if (!authValidation.valid) {
+    logEntry = `❌ Authentication failed: ${authValidation.reason}`;
+    console.error(logEntry);
+    logger(logEntry);
+    respuesta = buildNACK(trama);
+    return { respuesta, logEntry };
+  }
+  
+  trama.topic = getName(message.toString("hex"));
+
+  logEntry = "Trama de autenticación " + trama.topic;
+  console.log(logEntry);
+  
+  // Parse authentication data (user, password, etc.)
+  trama = parseAutenticacion(message.toString("hex"), trama);
+
+  respuesta = buildAutenticacion(trama, callStack, generateSequentialSessionId);
+  
+  if (!respuesta) {
+    // Failed to generate session ID
+    logEntry = "Error: Failed to generate session ID";
+    console.error(logEntry);
+    logger(logEntry);
+    respuesta = buildNACK(trama);
+    return { respuesta, logEntry };
+  }
+  
+  // After authentication, session IDs are assigned in buildAutenticacion
+  // Create or update the session entry in activeSessions dictionary
+  const sessionKey = createOrUpdateSession(
+    trama.idSessionH,
+    trama.idSessionL,
+    trama.idFrame
+  );
+  if (sessionKey) {
+    const session = getSession(trama.idSessionH, trama.idSessionL);
+    logEntry += ` | Session: ${sessionKey}, FrameId: ${session?.lastFrameId || "00"}`;
+  }
+
+  return { respuesta, logEntry };
+}
+
+/**
+ * Processes an ASK (configuration request) frame
+ * @param {object} trama - Parsed frame object
+ * @param {array} callStack - Call stack for session management
+ * @returns {object} { respuesta: string, logEntry: string }
+ */
+function processAskFrame(trama, callStack) {
+  let respuesta = "";
+  let logEntry = "Trama de petición de configuración";
+  console.log(logEntry);
+
+  // Clear waitingForAsk flag if this is the ASK after authentication
+  if (trama.idSessionH && trama.idSessionL) {
+    clearWaitingForAsk(trama.idSessionH, trama.idSessionL);
+  }
+
+  // ASK always gets ACK response
+  respuesta = buildACK(trama, callStack);
+  if (!respuesta) {
+    // If buildACK returns null (session not in callStack), create ACK anyway
+    // This shouldn't happen after authentication, but ensures ASK always gets ACK
+    console.warn("⚠️ Session not found in callStack for ASK, creating ACK anyway");
+    let ackResponse = {};
+    ackResponse.idTrama = tConst.CODE_S_ACK;
+    ackResponse.ack = tConst.CODE_OK;
+    ackResponse.idFrame = trama.idFrame || "00";
+    ackResponse.idSessionH = trama.idSessionH || "00";
+    ackResponse.idSessionL = trama.idSessionL || "00";
+    ackResponse.size = "0000";
+    ackResponse.value = "";
+    const cadena = buildTrama(ackResponse, false);
+    respuesta = cadena + calcularCRC(cadena);
+  }
+
+  return { respuesta, logEntry };
+}
+
 function validateAuthenticationFrame(trama, messageHex, config) {
   // Check 1: Frame ID must be 0 (00 in hex)
   if (trama.idFrame !== "00") {
@@ -326,74 +413,14 @@ async function processTstProtocol(message) {
 
   switch (trama.idTrama ? trama.idTrama.toLowerCase() : undefined) {
     case tConst.CODE_R_AUTH: // Trama de autenticación
-      // Validate authentication frame before processing
-      const authValidation = validateAuthenticationFrame(trama, message.toString("hex"), config);
-      
-      if (!authValidation.valid) {
-        logEntry = `❌ Authentication failed: ${authValidation.reason}`;
-        console.error(logEntry);
-        logger(logEntry);
-        respuesta = buildNACK(trama);
-        break;
-      }
-      
-      trama.topic = getName(message.toString("hex"));
-
-      logEntry = "Trama de autenticación " + trama.topic;
-      console.log(logEntry);
-      
-      // Parse authentication data (user, password, etc.)
-      trama = parseAutenticacion(message.toString("hex"), trama);
-
-      respuesta = buildAutenticacion(trama, callStack, generateSequentialSessionId);
-      
-      if (!respuesta) {
-        // Failed to generate session ID
-        logEntry = "Error: Failed to generate session ID";
-        console.error(logEntry);
-        logger(logEntry);
-        respuesta = buildNACK(trama);
-        break;
-      }
-      
-      // After authentication, session IDs are assigned in buildAutenticacion
-      // Create or update the session entry in activeSessions dictionary
-      const sessionKey = createOrUpdateSession(
-        trama.idSessionH,
-        trama.idSessionL,
-        trama.idFrame
-      );
-      if (sessionKey) {
-        const session = getSession(trama.idSessionH, trama.idSessionL);
-        logEntry += ` | Session: ${sessionKey}, FrameId: ${session?.lastFrameId || "00"}`;
-      }
+      const authResult = processAuthenticationFrame(trama, message, config, callStack);
+      respuesta = authResult.respuesta;
+      logEntry = authResult.logEntry;
       break;
     case tConst.CODE_R_ASK: // Trama de petición de configuración
-      logEntry = "Trama de petición de configuración";
-      console.log(logEntry);
-
-      // Clear waitingForAsk flag if this is the ASK after authentication
-      if (trama.idSessionH && trama.idSessionL) {
-        clearWaitingForAsk(trama.idSessionH, trama.idSessionL);
-      }
-
-      // ASK always gets ACK response
-      respuesta = buildACK(trama, callStack);
-      if (!respuesta) {
-        // If buildACK returns null (session not in callStack), create ACK anyway
-        // This shouldn't happen after authentication, but ensures ASK always gets ACK
-        console.warn("⚠️ Session not found in callStack for ASK, creating ACK anyway");
-        let ackResponse = {};
-        ackResponse.idTrama = tConst.CODE_S_ACK;
-        ackResponse.ack = tConst.CODE_OK;
-        ackResponse.idFrame = trama.idFrame || "00";
-        ackResponse.idSessionH = trama.idSessionH || "00";
-        ackResponse.idSessionL = trama.idSessionL || "00";
-        ackResponse.size = "0000";
-        ackResponse.value = "";
-        const cadena = buildTrama(ackResponse, false);
-        respuesta = cadena + calcularCRC(cadena);
-      }
+      const askResult = processAskFrame(trama, callStack);
+      respuesta = askResult.respuesta;
+      logEntry = askResult.logEntry;
       break;
     case tConst.CODE_R_INFO: // Trama de información
       logEntry = "Trama de información";
