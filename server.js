@@ -1,3 +1,6 @@
+// Initialize console logging first (before any other imports that might use console)
+import "./src/logger.js";
+
 import dgram from "dgram";
 import dotenv from "dotenv";
 import { processTstProtocol } from "./src/processProtocol.js";
