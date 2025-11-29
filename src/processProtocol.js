@@ -39,6 +39,7 @@ import {
   clearWaitingForAsk,
   isWaitingForAsk,
   setSessionTopic,
+  setSessionLastMessage,
 } from "./sessionManager.js";
 
 /* --------------- LOG PATHS ----------------- */
@@ -252,6 +253,49 @@ function processAskFrame(trama) {
     ackResponse.value = "";
     const cadena = buildTrama(ackResponse, false);
     respuesta = cadena + calcularCRC(cadena);
+    
+    // Store the manually created ACK as last message for RACK resend
+    if (trama.idSessionH && trama.idSessionL) {
+      setSessionLastMessage(trama.idSessionH, trama.idSessionL, respuesta);
+    }
+  }
+
+  return { respuesta, logEntry };
+}
+
+/**
+ * Processes a RACK (resend ASK) frame
+ * Resends the last ASK ACK response that was sent to the session
+ * @param {object} trama - Parsed frame object
+ * @returns {object} { respuesta: string, logEntry: string }
+ */
+function processRackFrame(trama) {
+  let respuesta = "";
+  let logEntry = "Trama de petición de reenvío";
+  console.log(logEntry);
+  
+  // Try to get the last message (should be the ASK ACK response)
+  respuesta = buildLastResponse(trama);
+  
+  // If no last message found, send ACK anyway (like ASK does)
+  // This handles edge cases where last message wasn't stored
+  if (!respuesta) {
+    console.warn("⚠️ No last message found for RACK, sending ACK instead");
+    respuesta = buildACK(trama);
+    if (!respuesta) {
+      // If buildACK also fails, create ACK manually
+      console.warn("⚠️ Session not found for RACK, creating ACK anyway");
+      let ackResponse = {};
+      ackResponse.idTrama = tConst.CODE_S_ACK;
+      ackResponse.ack = tConst.CODE_OK;
+      ackResponse.idFrame = trama.idFrame || "00";
+      ackResponse.idSessionH = trama.idSessionH || "00";
+      ackResponse.idSessionL = trama.idSessionL || "00";
+      ackResponse.size = "0000";
+      ackResponse.value = "";
+      const cadena = buildTrama(ackResponse, false);
+      respuesta = cadena + calcularCRC(cadena);
+    }
   }
 
   return { respuesta, logEntry };
@@ -502,10 +546,10 @@ async function processTstProtocol(message) {
 
       respuesta = buildACK(trama);
       break;
-    case tConst.CODE_R_RACK: // Trama de petición de reenvío
-      logEntry = "Trama de petición de reenvío";
-      console.log(logEntry);
-      respuesta = buildLastResponse(trama);
+    case tConst.CODE_R_RACK: // Trama de petición de reenvío ASK
+      const rackResult = processRackFrame(trama);
+      respuesta = rackResult.respuesta;
+      logEntry = rackResult.logEntry;
       break;
     case tConst.CODE_R_READ: // Trama de lectura sin agrupar
       logEntry = "Trama de lectura sin agrupar";
