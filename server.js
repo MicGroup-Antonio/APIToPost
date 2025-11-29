@@ -26,10 +26,19 @@ server.on("message", async (msg, rinfo) => {
 
     let response = await processTstProtocol(msg);
     
-    // If response is null, frame was discarded (no active session for non-auth frame)
+    // If response is null, either:
+    // 1. Frame was discarded (no active session for non-auth frame)
+    // 2. END frame (doesn't require response)
     // Don't send any response
     if (response === null) {
-      console.log("Frame discarded: No response sent");
+      // Check if it's an END frame by looking at the message
+      const msgHex = msg.toString("hex");
+      const frameType = msgHex.slice(0, 2).toLowerCase();
+      if (frameType === "c2") {
+        console.log("✅ End of Transmission frame processed - no response sent");
+      } else {
+        console.log("⚠️ Frame discarded: No response sent");
+      }
       return;
     }
     

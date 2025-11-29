@@ -506,6 +506,32 @@ async function processGroupFrame(trama) {
 }
 
 /**
+ * Processes an END (end of transmission) frame
+ * Removes the session from activeSessions - no response is sent
+ * @param {object} trama - Parsed frame object
+ * @returns {object} { logEntry: string } - Returns log entry (no respuesta since END frames don't require response)
+ */
+function processEndFrame(trama) {
+  let logEntry = "Trama de Fin de Sesión";
+  console.log(logEntry);
+  
+  // Get session key before removing session (for logging)
+  const sessionKeyBeforeRemoval = getSessionKey(trama.idSessionH, trama.idSessionL);
+  if (sessionKeyBeforeRemoval) {
+    logEntry += ` | Session: ${sessionKeyBeforeRemoval}`;
+  }
+  
+  // Remove session from activeSessions dictionary
+  buildEnd(trama); // Removes session from activeSessions
+  logEntry += " | Session removed";
+  
+  console.log(logEntry);
+  logger(logEntry);
+  
+  return { logEntry };
+}
+
+/**
  * Calculates the expected next frame ID (increments and wraps at 255)
  * @param {string} lastFrameId - Last frame ID received (2 hex chars, e.g., "00", "FF")
  * @returns {string} Expected next frame ID (2 hex chars)
@@ -772,17 +798,10 @@ async function processTstProtocol(message) {
       respuesta = buildACK(trama);
       break;
     case tConst.CODE_R_ENDS: // Trama de Fin de Sesión
-      logEntry = "Trama de Fin de Sesión";
-      console.log(logEntry);
-      buildEnd(trama); //no devuelve, elimina el elemento de la lista de conversaciones
-      
-      // Remove session from activeSessions dictionary
-      const removed = removeSession(trama.idSessionH, trama.idSessionL);
-      if (removed) {
-        const sessionKey = getSessionKey(trama.idSessionH, trama.idSessionL);
-        logEntry += ` | Session removed: ${sessionKey}`;
-      }
-      break;
+      const endResult = processEndFrame(trama);
+      logEntry = endResult.logEntry;
+      // End of transmission does not require ACK - return null to send no response
+      return null;
     default:
       logEntry = "Trama no reconocida";
       console.log(logEntry);
