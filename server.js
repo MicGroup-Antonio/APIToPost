@@ -25,6 +25,14 @@ server.on("message", async (msg, rinfo) => {
     console.log(`Datos recibidos: ${msg.toString("hex")}`);
 
     let response = await processTstProtocol(msg);
+    
+    // If response is null, frame was discarded (no active session for non-auth frame)
+    // Don't send any response
+    if (response === null) {
+      console.log("Frame discarded: No response sent");
+      return;
+    }
+    
     console.log(`respondiendo ${response.toString("hex")}`);
 
     // Enviar respuesta al cliente

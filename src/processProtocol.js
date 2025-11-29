@@ -257,6 +257,35 @@ function processAskFrame(trama) {
   return { respuesta, logEntry };
 }
 
+/**
+ * Validates if a frame requires an active session
+ * Non-authentication frames must have an active session, otherwise they are discarded
+ * @param {object} trama - Parsed frame object
+ * @returns {boolean} True if frame should be processed, false if it should be discarded (no response)
+ */
+function validateFrameRequiresActiveSession(trama) {
+  // Authentication frames don't require an existing session
+  if (trama.idTrama && trama.idTrama.toLowerCase() === tConst.CODE_R_AUTH) {
+    return true;
+  }
+
+  // All other frames require an active session
+  if (!trama.idSessionH || !trama.idSessionL) {
+    // Frame has no session ID, discard it
+    console.warn(`⚠️ Frame discarded: No session ID provided (Frame type: ${trama.idTrama})`);
+    return false;
+  }
+
+  // Check if session exists in activeSessions
+  const hasActiveSession = sessionExists(trama.idSessionH, trama.idSessionL);
+  if (!hasActiveSession) {
+    console.warn(`⚠️ Frame discarded: No active session found for ${trama.idSessionH}${trama.idSessionL} (Frame type: ${trama.idTrama}, Frame ID: ${trama.idFrame})`);
+    return false;
+  }
+
+  return true;
+}
+
 function validateAuthenticationFrame(trama, messageHex, config) {
   // Check 1: Frame ID must be 0 (00 in hex)
   if (trama.idFrame !== "00") {
@@ -348,27 +377,20 @@ async function processTstProtocol(message) {
   let trama = parseResult.trama;
   console.log(trama);
 
+  // Validate that non-authentication frames have an active session
+  // If validation fails, discard frame silently (no response)
+  if (!validateFrameRequiresActiveSession(trama)) {
+    logEntry = `🚫 Frame discarded: No active session (Frame type: ${trama.idTrama}, Session: ${trama.idSessionH || "??"}${trama.idSessionL || "??"})`;
+    console.warn(logEntry);
+    logger(logEntry);
+    // Return null to indicate no response should be sent
+    return null;
+  }
+
   //buscamos sessionH y sessionL de la trama
   let insertTopic = findName(trama);
   //  console.log(`insertTopic: ${insertTopic}`);
-
-  //si los identificadores de sesion no están guardados, y no es auth devolvemos NACK
   console.log(`topic: ${insertTopic}`);
-  if (
-    (!insertTopic || insertTopic.length < 1) &&
-    trama.idTrama.toLowerCase() != tConst.CODE_R_AUTH
-  ) {
-    respuesta = buildNACK(trama);
-
-    logEntry = "Origen no encontrado";
-    console.log(logEntry);
-    logger(logEntry);
-    logger(respuesta);
-
-    const buffer = Buffer.from(respuesta, "hex");
-    console.log("buffer " + buffer);
-    return buffer;
-  }
 
   // Check if session is waiting for ASK after authentication
   // If waiting for ASK and frame is not ASK, discard it
