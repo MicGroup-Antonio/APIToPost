@@ -442,6 +442,70 @@ async function processReadFrame(trama) {
 }
 
 /**
+ * Processes a GROUP (grouped readings) frame
+ * Parses multiple grouped frames, validates them, and inserts each into the database
+ * @param {object} trama - Parsed frame object
+ * @returns {Promise<{ respuesta: string, logEntry: string }>} Promise that resolves with response and log entry
+ */
+async function processGroupFrame(trama) {
+  let respuesta = "";
+  let logEntry = "Trama de lecturas agrupadas";
+  console.log(logEntry);
+
+  // Get topic from session
+  const insertTopic = findName(trama);
+
+  // Parse the grouped frames
+  let tramas = getTramas(trama);
+  console.log(`tramas recibidas`);
+  console.log(tramas);
+
+  // Process all grouped frames and check for errors
+  let groupError = null;
+  for (let element of tramas) {
+    console.log(element);
+
+    // Parse each grouped frame's date from its value field
+    // Each element in GROUP frames has the same structure as READ frames
+    const elementReadData = parseReadFrameData(element.value);
+    
+    // Validate parsed data
+    // parseReadFrameData returns null values if the frame is too short or invalid
+    if (!elementReadData || elementReadData.date === null || elementReadData.duration === null || elementReadData.repetitions === null) {
+      groupError = `Invalid or incomplete frame data in grouped frame (frame too short or malformed)`;
+      console.error(`❌ ${groupError}`);
+      break;
+    }
+    
+    // Use the date from the frame (elementReadData.date) instead of server's now()
+    try {
+      const insertResult = await inserta(insertTopic, element.value, elementReadData.date);
+      if (!insertResult.success) {
+        groupError = `Database insertion failed for grouped frame: ${insertResult.error}`;
+        console.error(`❌ ${groupError}`);
+        break;
+      }
+    } catch (error) {
+      groupError = `Database insertion error for grouped frame: ${error.message}`;
+      console.error(`❌ ${groupError}`);
+      break;
+    }
+  }
+  
+  if (groupError) {
+    logEntry = `❌ GROUP Frame processing failed: ${groupError}`;
+    console.error(logEntry);
+    logger(logEntry);
+    // Leave respuesta empty/null - fallback will generate NACK
+  } else {
+    console.log("acabó el for");
+    respuesta = buildACK(trama);
+  }
+
+  return { respuesta, logEntry };
+}
+
+/**
  * Calculates the expected next frame ID (increments and wraps at 255)
  * @param {string} lastFrameId - Last frame ID received (2 hex chars, e.g., "00", "FF")
  * @returns {string} Expected next frame ID (2 hex chars)
@@ -697,55 +761,9 @@ async function processTstProtocol(message) {
       logEntry = readResult.logEntry;
       break;
     case tConst.CODE_R_GROUP: // Trama de lecturas agrupadas
-      logEntry = "Trama de lecturas agrupadas";
-      console.log(logEntry);
-
-      let tramas = getTramas(trama);
-      console.log(`tramas recibidas`);
-
-      console.log(tramas);
-
-      // Process all grouped frames and check for errors
-      let groupError = null;
-      for (let element of tramas) {
-        console.log(element);
-
-        // Parse each grouped frame's date from its value field
-        // Each element in GROUP frames has the same structure as READ frames
-        const elementReadData = parseReadFrameData(element.value);
-        
-        // Validate parsed data
-        // parseReadFrameData returns null values if the frame is too short or invalid
-        if (!elementReadData || elementReadData.date === null || elementReadData.duration === null || elementReadData.repetitions === null) {
-          groupError = `Invalid or incomplete frame data in grouped frame (frame too short or malformed)`;
-          console.error(`❌ ${groupError}`);
-          break;
-        }
-        
-        // Use the date from the frame (elementReadData.date) instead of server's now()
-        try {
-          const insertResult = await inserta(insertTopic, element.value, elementReadData.date);
-          if (!insertResult.success) {
-            groupError = `Database insertion failed for grouped frame: ${insertResult.error}`;
-            console.error(`❌ ${groupError}`);
-            break;
-          }
-        } catch (error) {
-          groupError = `Database insertion error for grouped frame: ${error.message}`;
-          console.error(`❌ ${groupError}`);
-          break;
-        }
-      }
-      
-      if (groupError) {
-        logEntry = `❌ GROUP Frame processing failed: ${groupError}`;
-        console.error(logEntry);
-        logger(logEntry);
-        // Leave respuesta empty/null - fallback will generate NACK
-      } else {
-        console.log("acabó el for");
-        respuesta = buildACK(trama);
-      }
+      const groupResult = await processGroupFrame(trama);
+      respuesta = groupResult.respuesta;
+      logEntry = groupResult.logEntry;
       break;
     case tConst.CODE_R_FOTA: // Petición de tramas en modo FOTA
       logEntry = "Petición de tramas en modo FOTA";
