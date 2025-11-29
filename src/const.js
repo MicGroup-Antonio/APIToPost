@@ -1,6 +1,6 @@
 export const CODE_R_AUTH = "d0"; // Trama de autenticación
 export const CODE_R_ASK = "c0"; // Trama de petición de configuración
-export const CODE_R_RACK = "c1"; // Trama de petición de reenvío
+export const CODE_R_RASK = "c1"; // Trama de petición de reenvío ASK (Resend ASK)
 export const CODE_R_READ = "a2"; // Trama de lectura sin agrupar
 export const CODE_R_GROUP = "e0"; // Trama de lecturas agrupadas
 export const CODE_R_INFO = "b2"; // Trama de información

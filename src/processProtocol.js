@@ -166,51 +166,63 @@ function validateInsertInputs(topic, trama) {
  *
  * @param {string} topic - Dirección remitente del mensaje.
  * @param {string} trama - Trama enviada que se almacenará.
+ * @param {string|Date|null} plotDate - Optional date from the frame (ISO string or Date object). If not provided, uses server's now().
+ * @returns {Promise<{success: boolean, error: string|null}>} Promise that resolves with insertion result
  */
-function inserta(topic, trama) {
-  // Validate and sanitize inputs
-  const validation = validateInsertInputs(topic, trama);
-  if (!validation.valid) {
-    console.error(`❌ Invalid input for database insertion: ${validation.error}`);
-    return;
-  }
-
-  const sanitizedTopic = validation.topic;
-  const sanitizedTrama = validation.trama;
-
-  // Use parameterized queries ($1, $2, $3, $4) to prevent SQL injection
-  // The pg library automatically escapes and sanitizes these values
-  var strSQL =
-    "INSERT into trm_avant.complete_plot ( value, discriminator, status, topic, plot_date  ) VALUES($1, $2, $3, $4, now()) RETURNING id";
-  var valores = [sanitizedTrama, config.discriminator, "N", sanitizedTopic];
-
-  console.log("Executing query...");
-
-  pool.query(strSQL, valores, (err, res) => {
-    console.log("Query completed!");
-    var fs = require("fs");
-    // Use sanitized values for logging
-    var logEntry =
-      sanitizedTopic + ";" + sanitizedTrama + ";" + config.discriminator + ";" + Date.now() + ";";
-
-    if (!err) {
-      console.log("✅ inserción correcta - ID:", res.rows[0].id);
-      logEntry += "SUCCESS";
-    } else {
-      console.log("❌ inserción Incorrecta");
-      console.log("Error message:", err.message);
-      console.log("Error code:", err.code);
-      console.log("Error detail:", err.detail);
-      console.log("Error hint:", err.hint);
-      logEntry += err.code || "UNKNOWN_ERROR";
+function inserta(topic, trama, plotDate = null) {
+  return new Promise((resolve, reject) => {
+    // Validate and sanitize inputs
+    const validation = validateInsertInputs(topic, trama);
+    if (!validation.valid) {
+      const errorMsg = `Invalid input for database insertion: ${validation.error}`;
+      console.error(`❌ ${errorMsg}`);
+      reject(new Error(errorMsg));
+      return;
     }
 
-    fs.appendFile(dbLogPath, logEntry + "\n", function (err) {
-      if (err) {
-        console.log("❌ Failed to write to log file:", err.message);
+    const sanitizedTopic = validation.topic;
+    const sanitizedTrama = validation.trama;
+
+    // Use parameterized queries to prevent SQL injection
+    // The pg library automatically escapes and sanitizes these values
+    // If plotDate is provided, use it; otherwise use server's now()
+    const dateValue = plotDate ? (plotDate instanceof Date ? plotDate.toISOString() : plotDate) : null;
+    var strSQL = dateValue
+      ? "INSERT into trm_avant.complete_plot ( value, discriminator, status, topic, plot_date  ) VALUES($1, $2, $3, $4, $5::timestamp) RETURNING id"
+      : "INSERT into trm_avant.complete_plot ( value, discriminator, status, topic, plot_date  ) VALUES($1, $2, $3, $4, now()) RETURNING id";
+    var valores = dateValue
+      ? [sanitizedTrama, config.discriminator, "N", sanitizedTopic, dateValue]
+      : [sanitizedTrama, config.discriminator, "N", sanitizedTopic];
+
+    console.log("Executing query...");
+
+    pool.query(strSQL, valores, (err, res) => {
+      console.log("Query completed!");
+      var fs = require("fs");
+      // Use sanitized values for logging
+      var logEntry =
+        sanitizedTopic + ";" + sanitizedTrama + ";" + config.discriminator + ";" + Date.now() + ";";
+
+      if (!err) {
+        console.log("✅ inserción correcta - ID:", res.rows[0].id);
+        logEntry += "SUCCESS";
+        resolve({ success: true, error: null });
       } else {
-        console.log("📝 Log entry written to file");
+        console.log("❌ inserción Incorrecta");
+        console.log("Error message:", err.message);
+        console.log("Error code:", err.code);
+        console.log("Error detail:", err.detail);
+        console.log("Error hint:", err.hint);
+        logEntry += err.code || "UNKNOWN_ERROR";
+        const errorMsg = `Database insertion failed: ${err.message} (code: ${err.code || "UNKNOWN"})`;
+        resolve({ success: false, error: errorMsg });
       }
+
+      fs.appendFile(dbLogPath, logEntry + "\n", function (err) {
+        if (err) {
+          console.log("❌ Failed to write to log file:", err.message);
+        }
+      });
     });
   });
 }
@@ -221,8 +233,6 @@ function logger(logEntry) {
   fs.appendFile(detailedLogPath, log + "\n", function (err) {
     if (err) {
       console.log("❌ Failed to write to log file:", err.message);
-    } else {
-      console.log("📝 Log entry written to file");
     }
   });
 }
@@ -312,7 +322,7 @@ function processAskFrame(trama) {
     const cadena = buildTrama(ackResponse, false);
     respuesta = cadena + calcularCRC(cadena);
     
-    // Store the manually created ACK as last message for RACK resend
+    // Store the manually created ACK as last message for RASK resend
     if (trama.idSessionH && trama.idSessionL) {
       setSessionLastMessage(trama.idSessionH, trama.idSessionL, respuesta);
     }
@@ -322,12 +332,12 @@ function processAskFrame(trama) {
 }
 
 /**
- * Processes a RACK (resend ASK) frame
+ * Processes a RASK (resend ASK) frame
  * Resends the last ASK ACK response that was sent to the session
  * @param {object} trama - Parsed frame object
  * @returns {object} { respuesta: string, logEntry: string }
  */
-function processRackFrame(trama) {
+function processRaskFrame(trama) {
   let respuesta = "";
   let logEntry = "Trama de petición de reenvío";
   console.log(logEntry);
@@ -338,11 +348,11 @@ function processRackFrame(trama) {
   // If no last message found, send ACK anyway (like ASK does)
   // This handles edge cases where last message wasn't stored
   if (!respuesta) {
-    console.warn("⚠️ No last message found for RACK, sending ACK instead");
+    console.warn("⚠️ No last message found for RASK, sending ACK instead");
     respuesta = buildACK(trama);
     if (!respuesta) {
       // If buildACK also fails, create ACK manually
-      console.warn("⚠️ Session not found for RACK, creating ACK anyway");
+      console.warn("⚠️ Session not found for RASK, creating ACK anyway");
       let ackResponse = {};
       ackResponse.idTrama = tConst.CODE_S_ACK;
       ackResponse.ack = tConst.CODE_OK;
@@ -354,6 +364,78 @@ function processRackFrame(trama) {
       const cadena = buildTrama(ackResponse, false);
       respuesta = cadena + calcularCRC(cadena);
     }
+  }
+
+  return { respuesta, logEntry };
+}
+
+/**
+ * Processes a READ (reading data) frame
+ * Parses the frame data, validates it, and inserts it into the database
+ * @param {object} trama - Parsed frame object
+ * @returns {Promise<{ respuesta: string, logEntry: string }>} Promise that resolves with response and log entry
+ */
+async function processReadFrame(trama) {
+  let respuesta = "";
+  let logEntry = "Trama de lectura sin agrupar";
+  console.log(logEntry);
+
+  // Get topic from session
+  const insertTopic = findName(trama);
+
+  // Parse READ frame data to extract frame type, date, duration, repetitions
+  const frameTypeDesc = getReadFrameTypeDescription(trama.ack);
+  const readData = parseReadFrameData(trama.value);
+  
+  // Validate that the frame data was parsed successfully
+  // READ frames must have at least date, duration, and repetitions
+  // parseReadFrameData returns null values if the frame is too short or invalid
+  if (!readData || readData.date === null || readData.duration === null || readData.repetitions === null) {
+    logEntry = `❌ READ Frame parsing failed: Invalid or incomplete frame data (frame too short or malformed)`;
+    console.error(logEntry);
+    logger(logEntry);
+    // Leave respuesta empty/null - fallback will generate NACK
+    return { respuesta, logEntry };
+  }
+  
+  // Log frame type and repetitions
+  console.log(`📊 READ Frame Details:`);
+  console.log(`   Frame Type: ${frameTypeDesc} (0x${trama.ack || "??"})`);
+  console.log(`   Repetitions: ${readData.repetitions !== null ? readData.repetitions : "N/A"}`);
+  if (readData.date) {
+    console.log(`   Date: ${readData.date}`);
+  }
+  if (readData.duration !== null) {
+    console.log(`   Duration: ${readData.duration} seconds`);
+  }
+  if (readData.readingData) {
+    console.log(`   Reading Data Length: ${readData.readingData.length / 2} bytes`);
+  }
+  
+  // Insert data into database
+  // trama.value contains the complete payload:
+  //   - Date (4 bytes, little-endian Unix timestamp)
+  //   - Duration (4 bytes, little-endian, seconds)
+  //   - Repetitions (1 byte)
+  //   - Reading data (variable length, up to 128 bytes)
+  // This is the correct data structure for the database 'value' field
+  // Use the date from the frame (readData.date) instead of server's now()
+  try {
+    const insertResult = await inserta(insertTopic, trama.value, readData.date);
+    if (!insertResult.success) {
+      logEntry = `❌ Database insertion failed: ${insertResult.error}`;
+      console.error(logEntry);
+      logger(logEntry);
+      // Leave respuesta empty/null - fallback will generate NACK
+      return { respuesta, logEntry };
+    }
+    // Database insertion successful
+    respuesta = buildACK(trama);
+  } catch (error) {
+    logEntry = `❌ Database insertion error: ${error.message}`;
+    console.error(logEntry);
+    logger(logEntry);
+    // Leave respuesta empty/null - fallback will generate NACK
   }
 
   return { respuesta, logEntry };
@@ -604,42 +686,15 @@ async function processTstProtocol(message) {
 
       respuesta = buildACK(trama);
       break;
-    case tConst.CODE_R_RACK: // Trama de petición de reenvío ASK
-      const rackResult = processRackFrame(trama);
-      respuesta = rackResult.respuesta;
-      logEntry = rackResult.logEntry;
+    case tConst.CODE_R_RASK: // Trama de petición de reenvío ASK
+      const raskResult = processRaskFrame(trama);
+      respuesta = raskResult.respuesta;
+      logEntry = raskResult.logEntry;
       break;
     case tConst.CODE_R_READ: // Trama de lectura sin agrupar
-      logEntry = "Trama de lectura sin agrupar";
-      console.log(logEntry);
-
-      // Parse READ frame data to extract frame type, date, duration, repetitions
-      const frameTypeDesc = getReadFrameTypeDescription(trama.ack);
-      const readData = parseReadFrameData(trama.value);
-      
-      // Log frame type and repetitions
-      console.log(`📊 READ Frame Details:`);
-      console.log(`   Frame Type: ${frameTypeDesc} (0x${trama.ack || "??"})`);
-      console.log(`   Repetitions: ${readData.repetitions !== null ? readData.repetitions : "N/A"}`);
-      if (readData.date) {
-        console.log(`   Date: ${readData.date}`);
-      }
-      if (readData.duration !== null) {
-        console.log(`   Duration: ${readData.duration} seconds`);
-      }
-      if (readData.readingData) {
-        console.log(`   Reading Data Length: ${readData.readingData.length / 2} bytes`);
-      }
-      
-      // Insert data into database
-      // trama.value contains the complete payload:
-      //   - Date (4 bytes, little-endian Unix timestamp)
-      //   - Duration (4 bytes, little-endian, seconds)
-      //   - Repetitions (1 byte)
-      //   - Reading data (variable length, up to 128 bytes)
-      // This is the correct data structure for the database 'value' field
-      inserta(insertTopic, trama.value);
-      respuesta = buildACK(trama);
+      const readResult = await processReadFrame(trama);
+      respuesta = readResult.respuesta;
+      logEntry = readResult.logEntry;
       break;
     case tConst.CODE_R_GROUP: // Trama de lecturas agrupadas
       logEntry = "Trama de lecturas agrupadas";
@@ -650,14 +705,47 @@ async function processTstProtocol(message) {
 
       console.log(tramas);
 
+      // Process all grouped frames and check for errors
+      let groupError = null;
       for (let element of tramas) {
         console.log(element);
 
-        inserta(insertTopic, element.value);
+        // Parse each grouped frame's date from its value field
+        // Each element in GROUP frames has the same structure as READ frames
+        const elementReadData = parseReadFrameData(element.value);
+        
+        // Validate parsed data
+        // parseReadFrameData returns null values if the frame is too short or invalid
+        if (!elementReadData || elementReadData.date === null || elementReadData.duration === null || elementReadData.repetitions === null) {
+          groupError = `Invalid or incomplete frame data in grouped frame (frame too short or malformed)`;
+          console.error(`❌ ${groupError}`);
+          break;
+        }
+        
+        // Use the date from the frame (elementReadData.date) instead of server's now()
+        try {
+          const insertResult = await inserta(insertTopic, element.value, elementReadData.date);
+          if (!insertResult.success) {
+            groupError = `Database insertion failed for grouped frame: ${insertResult.error}`;
+            console.error(`❌ ${groupError}`);
+            break;
+          }
+        } catch (error) {
+          groupError = `Database insertion error for grouped frame: ${error.message}`;
+          console.error(`❌ ${groupError}`);
+          break;
+        }
       }
-      console.log("acabó el for");
-
-      respuesta = buildACK(trama);
+      
+      if (groupError) {
+        logEntry = `❌ GROUP Frame processing failed: ${groupError}`;
+        console.error(logEntry);
+        logger(logEntry);
+        // Leave respuesta empty/null - fallback will generate NACK
+      } else {
+        console.log("acabó el for");
+        respuesta = buildACK(trama);
+      }
       break;
     case tConst.CODE_R_FOTA: // Petición de tramas en modo FOTA
       logEntry = "Petición de tramas en modo FOTA";

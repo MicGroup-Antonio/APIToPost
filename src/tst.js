@@ -73,25 +73,6 @@ function calcularCRC(hexString, littleEndian = true) {
   return crcHex;
 }
 
-function generarIdUnico(arr) {
-  if (!arr && arr.length == 0)
-    return Math.floor(Math.random() * 0xffff)
-      .toString(16)
-      .toLowerCase()
-      .padStart(4, "0");
-
-  const usados = new Set(arr.map((tr) => tr.idSessionH + tr.idSessionL));
-
-  let nuevoId;
-  do {
-    nuevoId = Math.floor(Math.random() * 0xffff)
-      .toString(16)
-      .toLowerCase()
-      .padStart(4, "0");
-  } while (usados.has(nuevoId));
-
-  return nuevoId;
-}
 /* -------------------------- Auxiliares -------------------------- */
 
 /* -------------------------- Parseadores-------------------------- */
