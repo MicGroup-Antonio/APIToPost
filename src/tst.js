@@ -28,7 +28,7 @@ const charPerByte = 2;
 /* -------------------------- Auxiliares -------------------------- */
 function esTST(topic) {
   const cadenaAntigua = "TST/OMS/";
-  if (topic.substr(0, cadenaAntigua.length) === cadenaAntigua) return false;
+  if (topic.slice(0, cadenaAntigua.length) === cadenaAntigua) return false;
   return true;
 }
 
@@ -45,7 +45,7 @@ function calcularCRC(hexString, littleEndian = true) {
   // 🔹 Convertir cada par de caracteres en un byte
   const buffer = [];
   for (let i = 0; i < hexString.length; i += charPerByte) {
-    buffer.push(parseInt(hexString.substr(i, charPerByte), 16));
+    buffer.push(parseInt(hexString.slice(i, i + charPerByte), 16));
   }
 
   // 🔹 Calcular CRC
@@ -125,27 +125,27 @@ function parseTrama(cadena) {
 
   let offset = 0;
 
-  trama.idTrama = cadena.substr(offset, charPerByte);
+  trama.idTrama = cadena.slice(offset, offset + charPerByte);
   offset += charPerByte;
-  trama.ack = cadena.substr(offset, charPerByte);
+  trama.ack = cadena.slice(offset, offset + charPerByte);
   offset += charPerByte;
-  trama.idFrame = cadena.substr(offset, charPerByte);
+  trama.idFrame = cadena.slice(offset, offset + charPerByte);
   offset += charPerByte;
-  trama.idSessionH = cadena.substr(offset, charPerByte);
+  trama.idSessionH = cadena.slice(offset, offset + charPerByte);
   offset += charPerByte;
-  trama.idSessionL = cadena.substr(offset, charPerByte);
+  trama.idSessionL = cadena.slice(offset, offset + charPerByte);
   offset += charPerByte;
-  trama.size = cadena.substr(offset, 2 * charPerByte);
+  trama.size = cadena.slice(offset, offset + 2 * charPerByte);
   offset += 2 * charPerByte;
 
   const sizeValue = getSizeFromLittleEndian(trama.size);
-  trama.value = cadena.substr(offset, sizeValue);
+  trama.value = cadena.slice(offset, offset + sizeValue);
   offset += sizeValue;
 
-  trama.crc = cadena.substr(offset, 2 * charPerByte);
+  trama.crc = cadena.slice(offset, offset + 2 * charPerByte);
   
   // Validate CRC
-  const frameWithoutCrc = cadena.substr(0, offset);
+  const frameWithoutCrc = cadena.slice(0, offset);
   const expectedCrc = calcularCRC(frameWithoutCrc);
   const receivedCrc = trama.crc.toLowerCase();
   const expectedCrcLower = expectedCrc.toLowerCase();
@@ -169,31 +169,95 @@ function parseTrama(cadena) {
 function parseAutenticacion(cadena, trama) {
   let offset = 7 * charPerByte;
 
-  trama.iMEI = cadena.substr(offset, 21 * charPerByte);
+  trama.iMEI = cadena.slice(offset, offset + 21 * charPerByte);
   offset += 21 * charPerByte;
 
-  trama.usuario = cadena.substr(offset, 21 * charPerByte);
+  trama.usuario = cadena.slice(offset, offset + 21 * charPerByte);
   offset += 21 * charPerByte;
 
-  trama.password = cadena.substr(offset, 21 * charPerByte);
+  trama.password = cadena.slice(offset, offset + 21 * charPerByte);
   offset += 21 * charPerByte;
 
-  trama.name = cadena.substr(offset, 40 * charPerByte);
+  trama.name = cadena.slice(offset, offset + 40 * charPerByte);
   offset += 40 * charPerByte;
 
   return trama;
 }
 
+/**
+ * Parses READ frame data to extract date, duration, repetitions, and reading data
+ * READ frame value structure (after size field):
+ * - Bytes 0-3 (hex 0-7): Date (4 bytes, timestamp in little-endian)
+ * - Bytes 4-7 (hex 8-15): Duration (4 bytes, seconds in hex, little-endian)
+ * - Byte 8 (hex 16-17): Repetitions (1 byte)
+ * - Bytes 9+ (hex 18+): Reading data (up to 128 bytes)
+ * @param {string} valueHex - Value field in hex format
+ * @returns {object} { date: string, duration: number, repetitions: number, readingData: string }
+ */
+function parseReadFrameData(valueHex) {
+  if (!valueHex || valueHex.length < 18) {
+    // Need at least 9 bytes (18 hex chars): date(8) + duration(8) + repetitions(2)
+    return { date: null, duration: null, repetitions: null, readingData: valueHex || "" };
+  }
+
+  // Extract date (bytes 0-3, hex chars 0-7) - stored in little-endian format
+  const dateHex = valueHex.slice(0, 8);
+  // Convert from little-endian to big-endian for parsing
+  const dateHexBE = dateHex.slice(6, 8) + dateHex.slice(4, 6) + dateHex.slice(2, 4) + dateHex.slice(0, 2);
+  const dateTimestamp = parseInt(dateHexBE, 16);
+  const date = new Date(dateTimestamp * 1000); // Convert Unix timestamp to Date
+  const dateStr = date.toISOString();
+
+  // Extract duration (bytes 4-7, hex chars 8-15) - stored in little-endian format
+  const durationHex = valueHex.slice(8, 16);
+  // Convert from little-endian to big-endian for parsing
+  const durationHexBE = durationHex.slice(6, 8) + durationHex.slice(4, 6) + durationHex.slice(2, 4) + durationHex.slice(0, 2);
+  const duration = parseInt(durationHexBE, 16);
+
+  // Extract repetitions (byte 8, hex chars 16-17)
+  const repetitionsHex = valueHex.slice(16, 18);
+  const repetitions = parseInt(repetitionsHex, 16);
+
+  // Extract reading data (bytes 9+, hex chars 18+)
+  const readingData = valueHex.slice(18);
+
+  return { date: dateStr, duration, repetitions, readingData };
+}
+
+/**
+ * Gets frame type description for READ frames
+ * @param {string} frameTypeHex - Frame type byte in hex (from trama.ack field)
+ * @returns {string} Frame type description
+ */
+function getReadFrameTypeDescription(frameTypeHex) {
+  if (!frameTypeHex) return "Unknown";
+  
+  const frameType = parseInt(frameTypeHex, 16);
+  
+  switch (frameType) {
+    case 0x00:
+      return "Trama periódica (Periodic)";
+    case 0x01:
+      return "Medida forzada (Forced measurement)";
+    case 0x02:
+      return "Por FOTA (By FOTA)";
+    case 0xAB:
+      return "Fragmentada B/A (Fragmented B/A)";
+    default:
+      return `Unknown type (0x${frameTypeHex})`;
+  }
+}
+
 function getSizeFromLittleEndian(sizeStr) {
   const size =
-    sizeStr.substr(charPerByte, charPerByte) + sizeStr.substr(0, charPerByte);
+    sizeStr.slice(charPerByte, charPerByte * 2) + sizeStr.slice(0, charPerByte);
   return parseInt(size, 16) * charPerByte;
 }
 
 function getName(tramaCompleta) {
   const offset = 70 * charPerByte;
 
-  const hexName = tramaCompleta.substr(offset, 40 * charPerByte);
+  const hexName = tramaCompleta.slice(offset, offset + 40 * charPerByte);
   const name = Buffer.from(hexName, "hex").toString("ascii");
 
   return name.replace(/\x00+$/, "");
@@ -219,7 +283,7 @@ function getTramas(grupoDeTramas) {
   //  console.log(`totalSize: ${totalSize}`);
 
   while (offset < totalSize) {
-    const parseResult = parseTrama(grupoDeTramas.value.substr(offset));
+    const parseResult = parseTrama(grupoDeTramas.value.slice(offset));
     
     // Only process successfully parsed tramas
     if (parseResult.success && parseResult.trama) {
@@ -342,6 +406,8 @@ export {
   buildTrama,
   parseTrama,
   parseAutenticacion,
+  parseReadFrameData,
+  getReadFrameTypeDescription,
   getName,
   findName,
   getTramas,

@@ -23,6 +23,8 @@ import {
   buildNACK,
   buildNACKDesdeMensaje,
   parseAutenticacion,
+  parseReadFrameData,
+  getReadFrameTypeDescription,
   buildTrama,
   calcularCRC,
 } from "./tst.js";
@@ -112,28 +114,84 @@ let trama = {
 /* ------------------- TST ------------------- */
 
 /**
+ * Validates and sanitizes input parameters for database insertion
+ * @param {string} topic - Topic/device name
+ * @param {string} trama - Frame value data
+ * @returns {{valid: boolean, topic: string, trama: string, error: string}} Validation result
+ */
+function validateInsertInputs(topic, trama) {
+  // Maximum lengths to prevent buffer overflow attacks
+  const MAX_TOPIC_LENGTH = 255;
+  const MAX_TRAMA_LENGTH = 10000; // Adjust based on your database column size
+
+  // Type validation
+  if (typeof topic !== "string" && topic !== null && topic !== undefined) {
+    return { valid: false, topic: null, trama: null, error: "Topic must be a string" };
+  }
+  if (typeof trama !== "string" && trama !== null && trama !== undefined) {
+    return { valid: false, topic: null, trama: null, error: "Trama must be a string" };
+  }
+
+  // Convert null/undefined to empty string
+  const sanitizedTopic = (topic || "").toString();
+  const sanitizedTrama = (trama || "").toString();
+
+  // Length validation
+  if (sanitizedTopic.length > MAX_TOPIC_LENGTH) {
+    console.warn(`⚠️ Topic length exceeds maximum (${MAX_TOPIC_LENGTH}), truncating`);
+    return {
+      valid: true,
+      topic: sanitizedTopic.substring(0, MAX_TOPIC_LENGTH),
+      trama: sanitizedTrama,
+      error: null,
+    };
+  }
+  if (sanitizedTrama.length > MAX_TRAMA_LENGTH) {
+    console.warn(`⚠️ Trama length exceeds maximum (${MAX_TRAMA_LENGTH}), truncating`);
+    return {
+      valid: true,
+      topic: sanitizedTopic,
+      trama: sanitizedTrama.substring(0, MAX_TRAMA_LENGTH),
+      error: null,
+    };
+  }
+
+  return { valid: true, topic: sanitizedTopic, trama: sanitizedTrama, error: null };
+}
+
+/**
  * Graba en la base de datos la trama recibida.
  * Crea un log de la cadena grabada en base de datos: archivo log
+ * Uses parameterized queries to prevent SQL injection.
  *
  * @param {string} topic - Dirección remitente del mensaje.
  * @param {string} trama - Trama enviada que se almacenará.
  */
 function inserta(topic, trama) {
-  // console.log('Attempting to insert:', topic, trama)
+  // Validate and sanitize inputs
+  const validation = validateInsertInputs(topic, trama);
+  if (!validation.valid) {
+    console.error(`❌ Invalid input for database insertion: ${validation.error}`);
+    return;
+  }
 
+  const sanitizedTopic = validation.topic;
+  const sanitizedTrama = validation.trama;
+
+  // Use parameterized queries ($1, $2, $3, $4) to prevent SQL injection
+  // The pg library automatically escapes and sanitizes these values
   var strSQL =
     "INSERT into trm_avant.complete_plot ( value, discriminator, status, topic, plot_date  ) VALUES($1, $2, $3, $4, now()) RETURNING id";
-  var valores = [trama, config.discriminator, "N", topic];
-  // console.log(strSQL)
-  //console.log(valores)
+  var valores = [sanitizedTrama, config.discriminator, "N", sanitizedTopic];
 
   console.log("Executing query...");
 
   pool.query(strSQL, valores, (err, res) => {
     console.log("Query completed!");
     var fs = require("fs");
+    // Use sanitized values for logging
     var logEntry =
-      topic + ";" + trama + ";" + config.discriminator + ";" + Date.now() + ";";
+      sanitizedTopic + ";" + sanitizedTrama + ";" + config.discriminator + ";" + Date.now() + ";";
 
     if (!err) {
       console.log("✅ inserción correcta - ID:", res.rows[0].id);
@@ -555,6 +613,31 @@ async function processTstProtocol(message) {
       logEntry = "Trama de lectura sin agrupar";
       console.log(logEntry);
 
+      // Parse READ frame data to extract frame type, date, duration, repetitions
+      const frameTypeDesc = getReadFrameTypeDescription(trama.ack);
+      const readData = parseReadFrameData(trama.value);
+      
+      // Log frame type and repetitions
+      console.log(`📊 READ Frame Details:`);
+      console.log(`   Frame Type: ${frameTypeDesc} (0x${trama.ack || "??"})`);
+      console.log(`   Repetitions: ${readData.repetitions !== null ? readData.repetitions : "N/A"}`);
+      if (readData.date) {
+        console.log(`   Date: ${readData.date}`);
+      }
+      if (readData.duration !== null) {
+        console.log(`   Duration: ${readData.duration} seconds`);
+      }
+      if (readData.readingData) {
+        console.log(`   Reading Data Length: ${readData.readingData.length / 2} bytes`);
+      }
+      
+      // Insert data into database
+      // trama.value contains the complete payload:
+      //   - Date (4 bytes, little-endian Unix timestamp)
+      //   - Duration (4 bytes, little-endian, seconds)
+      //   - Repetitions (1 byte)
+      //   - Reading data (variable length, up to 128 bytes)
+      // This is the correct data structure for the database 'value' field
       inserta(insertTopic, trama.value);
       respuesta = buildACK(trama);
       break;
