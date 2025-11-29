@@ -22,6 +22,7 @@ import {
   buildACK,
   buildNACK,
   buildNACKDesdeMensaje,
+  parseAutenticacion,
 } from "./tst.js";
 import {
   activeSessions,
@@ -163,6 +164,68 @@ function logger(logEntry) {
 }
 
 /**
+ * Validates an authentication frame before creating a session
+ * @param {object} trama - Parsed frame object
+ * @param {string} messageHex - Complete message in hex format
+ * @param {object} config - Server configuration
+ * @returns {{valid: boolean, reason: string}} Validation result
+ */
+function validateAuthenticationFrame(trama, messageHex, config) {
+  // Check 1: Frame ID must be 0 (00 in hex)
+  if (trama.idFrame !== "00") {
+    return {
+      valid: false,
+      reason: `Invalid frame ID: expected 00, got ${trama.idFrame}`,
+    };
+  }
+  
+  // Check 2: User and password must be configured
+  if (!config.authUser || !config.authPassword) {
+    return {
+      valid: false,
+      reason: "Authentication credentials not configured in server",
+    };
+  }
+  
+  // Parse authentication data to extract user and password
+  const authData = parseAutenticacion(messageHex, {});
+  
+  if (!authData.usuario || !authData.password) {
+    return {
+      valid: false,
+      reason: "Could not extract user or password from authentication frame",
+    };
+  }
+  
+  // Convert hex strings to ASCII (remove null padding)
+  const receivedUser = Buffer.from(authData.usuario, "hex")
+    .toString("ascii")
+    .replace(/\x00+$/, "");
+  const receivedPassword = Buffer.from(authData.password, "hex")
+    .toString("ascii")
+    .replace(/\x00+$/, "");
+  
+  // Check 3: Validate user
+  if (receivedUser !== config.authUser) {
+    return {
+      valid: false,
+      reason: `Invalid user: expected '${config.authUser}', got '${receivedUser}'`,
+    };
+  }
+  
+  // Check 4: Validate password
+  if (receivedPassword !== config.authPassword) {
+    return {
+      valid: false,
+      reason: "Invalid password",
+    };
+  }
+  
+  console.log(`✅ Authentication validated: user '${receivedUser}'`);
+  return { valid: true, reason: "" };
+}
+
+/**
  * Función que decodifica el mensaje recibido, y contesta dependiendo del tipo de mensaje
  *
  * @param {string} message - trama recibida
@@ -233,11 +296,24 @@ async function processTstProtocol(message) {
 
   switch (trama.idTrama ? trama.idTrama.toLowerCase() : undefined) {
     case tConst.CODE_R_AUTH: // Trama de autenticación
+      // Validate authentication frame before processing
+      const authValidation = validateAuthenticationFrame(trama, message.toString("hex"), config);
+      
+      if (!authValidation.valid) {
+        logEntry = `❌ Authentication failed: ${authValidation.reason}`;
+        console.error(logEntry);
+        logger(logEntry);
+        respuesta = buildNACK(trama);
+        break;
+      }
+      
       trama.topic = getName(message.toString("hex"));
 
       logEntry = "Trama de autenticación " + trama.topic;
       console.log(logEntry);
-      //      trama=parseAutenticacion(message, trama);
+      
+      // Parse authentication data (user, password, etc.)
+      trama = parseAutenticacion(message.toString("hex"), trama);
 
       respuesta = buildAutenticacion(trama, callStack, generateSequentialSessionId);
       

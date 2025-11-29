@@ -13,5 +13,7 @@
     "INETCOUNTERS": 1
   },
   "arrDiscriminatorRV": ["MQTT", "INETCOUNTERS", "SIGFOX", "WMBUS"],
-  "sessionCleanupIntervalMinutes": 10
+  "sessionCleanupIntervalMinutes": 10,
+  "authUser": "user",
+  "authPassword": "pass"
 }
