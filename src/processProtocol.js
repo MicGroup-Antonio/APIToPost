@@ -38,6 +38,7 @@ import {
   initializeSessionManager,
   clearWaitingForAsk,
   isWaitingForAsk,
+  setSessionTopic,
 } from "./sessionManager.js";
 
 /* --------------- LOG PATHS ----------------- */
@@ -105,7 +106,7 @@ let trama = {
   crc: null,
 };
 
-const callStack = [];
+// callStack removed - using activeSessions dictionary instead
 
 /* ------------------- TST ------------------- */
 
@@ -172,10 +173,9 @@ function logger(logEntry) {
  * @param {object} trama - Parsed frame object
  * @param {Buffer} message - Original message buffer
  * @param {object} config - Server configuration
- * @param {array} callStack - Call stack for session management
  * @returns {object} { respuesta: string, logEntry: string }
  */
-function processAuthenticationFrame(trama, message, config, callStack) {
+function processAuthenticationFrame(trama, message, config) {
   let respuesta = "";
   let logEntry = "";
 
@@ -198,7 +198,8 @@ function processAuthenticationFrame(trama, message, config, callStack) {
   // Parse authentication data (user, password, etc.)
   trama = parseAutenticacion(message.toString("hex"), trama);
 
-  respuesta = buildAutenticacion(trama, callStack, generateSequentialSessionId);
+  // buildAutenticacion now handles session creation with topic
+  respuesta = buildAutenticacion(trama, generateSequentialSessionId);
   
   if (!respuesta) {
     // Failed to generate session ID
@@ -209,13 +210,9 @@ function processAuthenticationFrame(trama, message, config, callStack) {
     return { respuesta, logEntry };
   }
   
-  // After authentication, session IDs are assigned in buildAutenticacion
-  // Create or update the session entry in activeSessions dictionary
-  const sessionKey = createOrUpdateSession(
-    trama.idSessionH,
-    trama.idSessionL,
-    trama.idFrame
-  );
+  // Session is already created in buildAutenticacion with topic
+  // Just get session info for logging
+  const sessionKey = getSessionKey(trama.idSessionH, trama.idSessionL);
   if (sessionKey) {
     const session = getSession(trama.idSessionH, trama.idSessionL);
     logEntry += ` | Session: ${sessionKey}, FrameId: ${session?.lastFrameId || "00"}`;
@@ -227,10 +224,9 @@ function processAuthenticationFrame(trama, message, config, callStack) {
 /**
  * Processes an ASK (configuration request) frame
  * @param {object} trama - Parsed frame object
- * @param {array} callStack - Call stack for session management
  * @returns {object} { respuesta: string, logEntry: string }
  */
-function processAskFrame(trama, callStack) {
+function processAskFrame(trama) {
   let respuesta = "";
   let logEntry = "Trama de petición de configuración";
   console.log(logEntry);
@@ -241,11 +237,11 @@ function processAskFrame(trama, callStack) {
   }
 
   // ASK always gets ACK response
-  respuesta = buildACK(trama, callStack);
+  respuesta = buildACK(trama);
   if (!respuesta) {
-    // If buildACK returns null (session not in callStack), create ACK anyway
+    // If buildACK returns null (session not found), create ACK anyway
     // This shouldn't happen after authentication, but ensures ASK always gets ACK
-    console.warn("⚠️ Session not found in callStack for ASK, creating ACK anyway");
+    console.warn("⚠️ Session not found in activeSessions for ASK, creating ACK anyway");
     let ackResponse = {};
     ackResponse.idTrama = tConst.CODE_S_ACK;
     ackResponse.ack = tConst.CODE_OK;
@@ -353,7 +349,7 @@ async function processTstProtocol(message) {
   console.log(trama);
 
   //buscamos sessionH y sessionL de la trama
-  let insertTopic = findName(trama, callStack);
+  let insertTopic = findName(trama);
   //  console.log(`insertTopic: ${insertTopic}`);
 
   //si los identificadores de sesion no están guardados, y no es auth devolvemos NACK
@@ -413,12 +409,12 @@ async function processTstProtocol(message) {
 
   switch (trama.idTrama ? trama.idTrama.toLowerCase() : undefined) {
     case tConst.CODE_R_AUTH: // Trama de autenticación
-      const authResult = processAuthenticationFrame(trama, message, config, callStack);
+      const authResult = processAuthenticationFrame(trama, message, config);
       respuesta = authResult.respuesta;
       logEntry = authResult.logEntry;
       break;
     case tConst.CODE_R_ASK: // Trama de petición de configuración
-      const askResult = processAskFrame(trama, callStack);
+      const askResult = processAskFrame(trama);
       respuesta = askResult.respuesta;
       logEntry = askResult.logEntry;
       break;
@@ -426,19 +422,19 @@ async function processTstProtocol(message) {
       logEntry = "Trama de información";
       console.log(logEntry);
 
-      respuesta = buildACK(trama, callStack);
+      respuesta = buildACK(trama);
       break;
     case tConst.CODE_R_RACK: // Trama de petición de reenvío
       logEntry = "Trama de petición de reenvío";
       console.log(logEntry);
-      respuesta = buildLastResponse(trama, callStack);
+      respuesta = buildLastResponse(trama);
       break;
     case tConst.CODE_R_READ: // Trama de lectura sin agrupar
       logEntry = "Trama de lectura sin agrupar";
       console.log(logEntry);
 
       inserta(insertTopic, trama.value);
-      respuesta = buildACK(trama, callStack);
+      respuesta = buildACK(trama);
       break;
     case tConst.CODE_R_GROUP: // Trama de lecturas agrupadas
       logEntry = "Trama de lecturas agrupadas";
@@ -456,18 +452,18 @@ async function processTstProtocol(message) {
       }
       console.log("acabó el for");
 
-      respuesta = buildACK(trama, callStack);
+      respuesta = buildACK(trama);
       break;
     case tConst.CODE_R_FOTA: // Petición de tramas en modo FOTA
       logEntry = "Petición de tramas en modo FOTA";
       console.log(logEntry);
 
-      respuesta = buildACK(trama, callStack);
+      respuesta = buildACK(trama);
       break;
     case tConst.CODE_R_ENDS: // Trama de Fin de Sesión
       logEntry = "Trama de Fin de Sesión";
       console.log(logEntry);
-      buildEnd(trama, callStack); //no devuelve, elimina el elemento de la lista de conversaciones
+      buildEnd(trama); //no devuelve, elimina el elemento de la lista de conversaciones
       
       // Remove session from activeSessions dictionary
       const removed = removeSession(trama.idSessionH, trama.idSessionL);
@@ -496,11 +492,6 @@ async function processTstProtocol(message) {
   logger(respuesta);
 
   const buffer = Buffer.from(respuesta, "hex");
-  //  console.log("respuesta " + respuesta);
-  //  console.log("buffer " + buffer);
-  //  console.log(`Enviada respuesta a ${topicRespuesta}, callstack:`);
-  console.log("callStack");
-  console.log(callStack);
   console.log("activeSessions:", activeSessions);
   return buffer;
 }

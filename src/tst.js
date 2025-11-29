@@ -13,6 +13,16 @@
  * a partir de ahí se irá ampliando dependiendo de las funciones
  */
 import * as tConst from "./const.js";
+import {
+  getSessionTopic,
+  setSessionTopic,
+  getSessionLastMessage,
+  setSessionLastMessage,
+  createOrUpdateSession,
+  updateSessionFrameId,
+  removeSession,
+  getSession,
+} from "./sessionManager.js";
 const charPerByte = 2;
 
 /* -------------------------- Auxiliares -------------------------- */
@@ -188,20 +198,10 @@ function getName(tramaCompleta) {
 
   return name.replace(/\x00+$/, "");
 }
-function findName(trama, callStack) {
-  // console.log("findName");
-  // console.log(trama);
-  // console.log(callStack);
-
-  if (!callStack || callStack.length < 1) return null;
-  let element = callStack.find(
-    (element) =>
-      element.idSessionH === trama.idSessionH &&
-      element.idSessionL === trama.idSessionL
-  );
-
-  if (!element) return null;
-  return element.topic;
+function findName(trama) {
+  // Find topic using activeSessions instead of callStack
+  if (!trama.idSessionH || !trama.idSessionL) return null;
+  return getSessionTopic(trama.idSessionH, trama.idSessionL);
 }
 
 function getTramas(grupoDeTramas) {
@@ -247,10 +247,9 @@ function getTramas(grupoDeTramas) {
 /* -------------------------- Parseadores-------------------------- */
 
 /* -------------------------- Contestadores------------------------ */
-function buildAutenticacion(trama, callStack, generateSequentialSessionId) {
-  //si ya estaba autenticado, borro la sesión para empezar de nuevo
-  let index = callStack.indexOf((element) => element.topic === trama.topic);
-  if (index >= 0) callStack.splice(index, 1);
+function buildAutenticacion(trama, generateSequentialSessionId) {
+  // If already authenticated with same topic, remove old session
+  // (This is handled by createOrUpdateSession which overwrites existing sessions)
 
   // Generate sequential session ID from server
   // Session ID is a 2-byte number split into high (H) and low (L) bytes
@@ -263,58 +262,46 @@ function buildAutenticacion(trama, callStack, generateSequentialSessionId) {
   trama.idSessionH = sessionIds.idSessionH;
   trama.idSessionL = sessionIds.idSessionL;
 
-  callStack.push(trama);
+  // Create session in activeSessions with topic
+  createOrUpdateSession(trama.idSessionH, trama.idSessionL, trama.idFrame, trama.topic);
 
-  let response = buildACK(trama, callStack);
-  trama.lastMessage = response;
+  let response = buildACK(trama);
+  setSessionLastMessage(trama.idSessionH, trama.idSessionL, response);
   return response;
 }
 
-function buildEnd(trama, callStack) {
-  //quitamos la sesión de la trama, no devolvemos por que es fin de transmisión
-  let index = callStack.indexOf((element) => element.topic === trama.topic);
-  if (index >= 0) callStack.splice(index, 1);
-}
-function buildLastResponse(trama, callStack) {
-  // console.log("lastResponse");
-  // console.log(trama);
-  // console.log(callStack);
-
-  if (!callStack || callStack.length < 1) return null;
-  let element = callStack.find(
-    (element) =>
-      element.idSessionH === trama.idSessionH &&
-      element.idSessionL === trama.idSessionL
-  );
-
-  if (!element) return null;
-  return element.lastMessage;
+function buildEnd(trama) {
+  // Remove session from activeSessions (end of transmission)
+  removeSession(trama.idSessionH, trama.idSessionL);
 }
 
-function buildACK(trama, callStack) {
-  //buscamos en el callStack la sesión, para actualizarla
-  let session = callStack.find(
-    (element) =>
-      element.idSessionH === trama.idSessionH &&
-      element.idSessionL === trama.idSessionL
-  );
-  if (!session || session === undefined) return null;
+function buildLastResponse(trama) {
+  // Get last message from activeSessions
+  return getSessionLastMessage(trama.idSessionH, trama.idSessionL);
+}
 
-  session.idFrame = trama.idFrame;
-  session.idTrama = trama.idTrama;
+function buildACK(trama) {
+  // Get session from activeSessions
+  const session = getSession(trama.idSessionH, trama.idSessionL);
+  if (!session) return null;
+
+  // Update frame ID in session
+  updateSessionFrameId(trama.idSessionH, trama.idSessionL, trama.idFrame);
 
   let respuesta = {};
   respuesta.idTrama = tConst.CODE_S_ACK;
   respuesta.ack = tConst.CODE_OK;
-  respuesta.idFrame = session.idFrame;
-  respuesta.idSessionH = session.idSessionH;
-  respuesta.idSessionL = session.idSessionL;
+  respuesta.idFrame = trama.idFrame;
+  respuesta.idSessionH = trama.idSessionH;
+  respuesta.idSessionL = trama.idSessionL;
   respuesta.size = "0000";
   respuesta.value = "";
 
   const cadena = buildTrama(respuesta, false);
   let response = cadena + calcularCRC(cadena);
-  session.lastMessage = response;
+  
+  // Store last message in session
+  setSessionLastMessage(trama.idSessionH, trama.idSessionL, response);
   return response;
 }
 function buildNACK(trama) {

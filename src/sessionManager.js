@@ -5,7 +5,9 @@
  * Value: { 
  *   lastFrameId: string,      // last frame ID received for this session
  *   lastActivity: number,     // timestamp of last activity (milliseconds since epoch)
- *   waitingForAsk: boolean     // true if session just authenticated and is waiting for ASK frame
+ *   waitingForAsk: boolean,   // true if session just authenticated and is waiting for ASK frame
+ *   topic: string,            // device name/topic extracted from authentication frame
+ *   lastMessage: string       // last response message sent to this session (hex format)
  * }
  */
 const activeSessions = {};
@@ -57,9 +59,10 @@ function getSessionKey(idSessionH, idSessionL) {
  * @param {string} idSessionH - Session High byte
  * @param {string} idSessionL - Session Low byte
  * @param {string} frameId - Frame ID from the authentication frame
+ * @param {string} topic - Device name/topic (optional, can be set later)
  * @returns {string|null} Session key if successful, null otherwise
  */
-function createOrUpdateSession(idSessionH, idSessionL, frameId) {
+function createOrUpdateSession(idSessionH, idSessionL, frameId, topic = null) {
   const sessionKey = getSessionKey(idSessionH, idSessionL);
   if (!sessionKey) return null;
 
@@ -68,8 +71,10 @@ function createOrUpdateSession(idSessionH, idSessionL, frameId) {
     lastFrameId: frameId || "00",
     lastActivity: now,
     waitingForAsk: true, // After authentication, must receive ASK next
+    topic: topic || null,
+    lastMessage: null,
   };
-  console.log(`✅ Session created/updated: ${sessionKey}, lastFrameId: ${activeSessions[sessionKey].lastFrameId}, lastActivity: ${new Date(now).toISOString()}, waitingForAsk: true`);
+  console.log(`✅ Session created/updated: ${sessionKey}, lastFrameId: ${activeSessions[sessionKey].lastFrameId}, lastActivity: ${new Date(now).toISOString()}, waitingForAsk: true${topic ? `, topic: ${topic}` : ""}`);
   
   // Start cleanup interval if not already running
   startSessionCleanup();
@@ -153,6 +158,56 @@ function getSession(idSessionH, idSessionL) {
   const sessionKey = getSessionKey(idSessionH, idSessionL);
   if (!sessionKey) return null;
   return activeSessions[sessionKey] || null;
+}
+
+/**
+ * Gets the topic (device name) for a session
+ * @param {string} idSessionH - Session High byte
+ * @param {string} idSessionL - Session Low byte
+ * @returns {string|null} Topic/device name or null if not found
+ */
+function getSessionTopic(idSessionH, idSessionL) {
+  const session = getSession(idSessionH, idSessionL);
+  return session ? session.topic : null;
+}
+
+/**
+ * Sets the topic (device name) for a session
+ * @param {string} idSessionH - Session High byte
+ * @param {string} idSessionL - Session Low byte
+ * @param {string} topic - Device name/topic
+ * @returns {boolean} True if topic was set, false otherwise
+ */
+function setSessionTopic(idSessionH, idSessionL, topic) {
+  const sessionKey = getSessionKey(idSessionH, idSessionL);
+  if (!sessionKey || !activeSessions[sessionKey]) return false;
+  activeSessions[sessionKey].topic = topic;
+  return true;
+}
+
+/**
+ * Gets the last message sent to a session
+ * @param {string} idSessionH - Session High byte
+ * @param {string} idSessionL - Session Low byte
+ * @returns {string|null} Last message (hex format) or null if not found
+ */
+function getSessionLastMessage(idSessionH, idSessionL) {
+  const session = getSession(idSessionH, idSessionL);
+  return session ? session.lastMessage : null;
+}
+
+/**
+ * Sets the last message sent to a session
+ * @param {string} idSessionH - Session High byte
+ * @param {string} idSessionL - Session Low byte
+ * @param {string} lastMessage - Last message sent (hex format)
+ * @returns {boolean} True if lastMessage was set, false otherwise
+ */
+function setSessionLastMessage(idSessionH, idSessionL, lastMessage) {
+  const sessionKey = getSessionKey(idSessionH, idSessionL);
+  if (!sessionKey || !activeSessions[sessionKey]) return false;
+  activeSessions[sessionKey].lastMessage = lastMessage;
+  return true;
 }
 
 /**
@@ -316,5 +371,9 @@ export {
   initializeSessionManager,
   clearWaitingForAsk,
   isWaitingForAsk,
+  getSessionTopic,
+  setSessionTopic,
+  getSessionLastMessage,
+  setSessionLastMessage,
 };
 
