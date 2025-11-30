@@ -46,13 +46,33 @@ import {
 
 /* --------------- LOG PATHS ----------------- */
 const now = new Date(); // también se usa en la función logger
-const year = now.getFullYear();
-const month = String(now.getMonth() + 1).padStart(2, "0"); // 01-12
-
-const dbLogPath = `./logs/log_${year}_${month}.txt`;
-const detailedLogPath = `./logs/detailedLog_${year}_${month}.txt`;
-
 const separacion = "--------------------------------";
+
+/**
+ * Gets the database log file path for the current day
+ * Automatically rotates when day changes (daily rotation)
+ * @returns {string} Database log file path
+ */
+function getDbLogPath() {
+  const currentDate = new Date();
+  const year = currentDate.getFullYear();
+  const month = String(currentDate.getMonth() + 1).padStart(2, "0"); // 01-12
+  const day = String(currentDate.getDate()).padStart(2, "0"); // 01-31
+  return `./logs/log_${year}_${month}_${day}.log`;
+}
+
+/**
+ * Gets the detailed log file path for the current day
+ * Automatically rotates when day changes (daily rotation)
+ * @returns {string} Detailed log file path
+ */
+function getDetailedLogPath() {
+  const currentDate = new Date();
+  const year = currentDate.getFullYear();
+  const month = String(currentDate.getMonth() + 1).padStart(2, "0"); // 01-12
+  const day = String(currentDate.getDate()).padStart(2, "0"); // 01-31
+  return `./logs/detailedLog_${year}_${month}_${day}.log`;
+}
 /* ------------------- DB -------------------- */
 process.env.PGUSER = config.pguser;
 process.env.PGHOST = config.pghost;
@@ -218,7 +238,9 @@ function inserta(topic, trama, plotDate = null) {
         resolve({ success: false, error: errorMsg });
       }
 
-      fs.appendFile(dbLogPath, logEntry + "\n", function (err) {
+      // Get current log path (automatically handles month rotation)
+      const currentDbLogPath = getDbLogPath();
+      fs.appendFile(currentDbLogPath, logEntry + "\n", function (err) {
         if (err) {
           console.log("❌ Failed to write to log file:", err.message);
         }
@@ -229,8 +251,10 @@ function inserta(topic, trama, plotDate = null) {
 
 function logger(logEntry) {
   var fs = require("fs");
-  const log = now.toString() + " - " + logEntry;
-  fs.appendFile(detailedLogPath, log + "\n", function (err) {
+  const log = new Date().toString() + " - " + logEntry;
+  // Get current log path (automatically handles month rotation)
+  const currentDetailedLogPath = getDetailedLogPath();
+  fs.appendFile(currentDetailedLogPath, log + "\n", function (err) {
     if (err) {
       console.log("❌ Failed to write to log file:", err.message);
     }
