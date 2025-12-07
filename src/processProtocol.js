@@ -48,6 +48,10 @@ import {
 const now = new Date(); // también se usa en la función logger
 const separacion = "--------------------------------";
 
+/* --------------- BRAND CONSTANTS ----------------- */
+// MAGDALENNA brand identifier pattern used in value processing
+const MAGDALENNA_BRAND_PATTERN = "2434";
+
 /**
  * Gets the database log file path for the current day
  * Automatically rotates when day changes (daily rotation)
@@ -180,6 +184,41 @@ function validateInsertInputs(topic, trama) {
 }
 
 /**
+ * Processes the value string to find MAGDALENNA brand pattern and extract:
+ * - 4 characters before the brand pattern
+ * - The brand pattern itself
+ * - Everything after the brand pattern
+ * Trims out leading characters before this pattern.
+ * 
+ * @param {string} value - The value string to process
+ * @returns {string} Processed value with leading characters trimmed, or original value if pattern not found
+ */
+function processValuePattern(value) {
+  if (!value || typeof value !== "string") {
+    return value;
+  }
+
+  // Find the MAGDALENNA brand pattern in the string
+  const patternIndex = value.indexOf(MAGDALENNA_BRAND_PATTERN);
+  
+  if (patternIndex === -1) {
+    // Pattern not found, return original value
+    return value;
+  }
+
+  // Check if there are at least 4 characters before the brand pattern
+  if (patternIndex < 4) {
+    // Not enough characters before pattern, return from pattern onwards
+    return value.substring(patternIndex);
+  }
+
+  // Extract: 4 chars before brand pattern + brand pattern + rest of string
+  const processedValue = value.substring(patternIndex - 4);
+  
+  return processedValue;
+}
+
+/**
  * Graba en la base de datos la trama recibida.
  * Crea un log de la cadena grabada en base de datos: archivo log
  * Uses parameterized queries to prevent SQL injection.
@@ -201,7 +240,10 @@ function inserta(topic, trama, plotDate = null) {
     }
 
     const sanitizedTopic = validation.topic;
-    const sanitizedTrama = validation.trama;
+    let sanitizedTrama = validation.trama;
+    
+    // Process value to extract pattern (4 chars before "2434" + "2434" + rest)
+    sanitizedTrama = processValuePattern(sanitizedTrama);
 
     // Use parameterized queries to prevent SQL injection
     // The pg library automatically escapes and sanitizes these values
