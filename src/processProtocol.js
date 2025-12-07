@@ -732,13 +732,15 @@ async function processTstProtocol(message) {
   }
 
   // Validate frame ID order (check for out-of-order frames)
-  // If validation fails, discard frame silently (no response)
+  // If validation fails, log warning but continue processing normally
   if (!validateFrameIdOrder(trama)) {
-    logEntry = `🚫 Frame discarded: Frame ID out of order (Frame type: ${trama.idTrama}, Session: ${trama.idSessionH}${trama.idSessionL}, Frame ID: ${trama.idFrame})`;
+    const session = getSession(trama.idSessionH, trama.idSessionL);
+    const lastFrameId = session?.lastFrameId || "00";
+    const expectedFrameId = getExpectedNextFrameId(lastFrameId);
+    logEntry = `⚠️ HIGH WARNING: Frame ID out of order - expected ${expectedFrameId}, received ${trama.idFrame} (Frame type: ${trama.idTrama}, Session: ${trama.idSessionH}${trama.idSessionL}, Last: ${lastFrameId}) - Processing frame normally`;
     console.warn(logEntry);
     logger(logEntry);
-    // Return null to indicate no response should be sent
-    return null;
+    // Continue processing the frame normally instead of discarding
   }
 
   //buscamos sessionH y sessionL de la trama
