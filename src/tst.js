@@ -12,20 +12,23 @@
  * };
  * a partir de ahí se irá ampliando dependiendo de las funciones
  */
-
+import * as tConst from "./const.js";
+import {
+  getSessionTopic,
+  setSessionTopic,
+  getSessionLastMessage,
+  setSessionLastMessage,
+  createOrUpdateSession,
+  updateSessionFrameId,
+  removeSession,
+  getSession,
+} from "./sessionManager.js";
 const charPerByte = 2;
-const id = {
-  Autenticacion: "d0",
-  ASK: "c0",
-  LecturaSimple: "a2",
-  LecturaAgrupada: "e0",
-  End: "c2",
-};
 
 /* -------------------------- Auxiliares -------------------------- */
 function esTST(topic) {
   const cadenaAntigua = "TST/OMS/";
-  if (topic.substr(0, cadenaAntigua.length) === cadenaAntigua) return false;
+  if (topic.slice(0, cadenaAntigua.length) === cadenaAntigua) return false;
   return true;
 }
 
@@ -42,7 +45,7 @@ function calcularCRC(hexString, littleEndian = true) {
   // 🔹 Convertir cada par de caracteres en un byte
   const buffer = [];
   for (let i = 0; i < hexString.length; i += charPerByte) {
-    buffer.push(parseInt(hexString.substr(i, charPerByte), 16));
+    buffer.push(parseInt(hexString.slice(i, i + charPerByte), 16));
   }
 
   // 🔹 Calcular CRC
@@ -70,25 +73,6 @@ function calcularCRC(hexString, littleEndian = true) {
   return crcHex;
 }
 
-function generarIdUnico(arr) {
-  if (!arr && arr.length == 0)
-    return Math.floor(Math.random() * 0xffff)
-      .toString(16)
-      .toLowerCase()
-      .padStart(4, "0");
-
-  const usados = new Set(arr.map((tr) => tr.idSessionH + tr.idSessionL));
-
-  let nuevoId;
-  do {
-    nuevoId = Math.floor(Math.random() * 0xffff)
-      .toString(16)
-      .toLowerCase()
-      .padStart(4, "0");
-  } while (usados.has(nuevoId));
-
-  return nuevoId;
-}
 /* -------------------------- Auxiliares -------------------------- */
 
 /* -------------------------- Parseadores-------------------------- */
@@ -113,87 +97,186 @@ function buildTrama(trama, incluyeCRC = true) {
 /**
  * Recibe una cadena y divide la trama en los valores correspondientes
  * @param String cadena
- * @returns { idTrama, ack, idFrame, idSessionH, idSessionL, size, value, crc }
+ * @returns { success: boolean, trama: object | null, error: string | null }
+ *          On success: { success: true, trama: {...}, error: null }
+ *          On failure: { success: false, trama: null, error: "error message" }
  */
 function parseTrama(cadena) {
   const trama = {};
 
   let offset = 0;
 
-  trama.idTrama = cadena.substr(offset, charPerByte);
+  // Minimum frame length: header (5 bytes) + size (2 bytes) + CRC (2 bytes) = 9 bytes = 18 hex chars
+  const minFrameLength = 9 * charPerByte;
+  if (cadena.length < minFrameLength) {
+    return {
+      success: false,
+      trama: null,
+      error: `Frame too short: expected at least ${minFrameLength} hex characters, received ${cadena.length}`
+    };
+  }
+
+  trama.idTrama = cadena.slice(offset, offset + charPerByte);
   offset += charPerByte;
-  trama.ack = cadena.substr(offset, charPerByte);
+  trama.ack = cadena.slice(offset, offset + charPerByte);
   offset += charPerByte;
-  trama.idFrame = cadena.substr(offset, charPerByte);
+  trama.idFrame = cadena.slice(offset, offset + charPerByte);
   offset += charPerByte;
-  trama.idSessionH = cadena.substr(offset, charPerByte);
+  trama.idSessionH = cadena.slice(offset, offset + charPerByte);
   offset += charPerByte;
-  trama.idSessionL = cadena.substr(offset, charPerByte);
+  trama.idSessionL = cadena.slice(offset, offset + charPerByte);
   offset += charPerByte;
-  trama.size = cadena.substr(offset, 2 * charPerByte);
+  trama.size = cadena.slice(offset, offset + 2 * charPerByte);
   offset += 2 * charPerByte;
 
   const sizeValue = getSizeFromLittleEndian(trama.size);
-  trama.value = cadena.substr(offset, sizeValue);
+  
+  // Check if frame is long enough to contain the value field and CRC
+  const requiredLength = offset + sizeValue + 2 * charPerByte; // offset + value + CRC
+  if (cadena.length < requiredLength) {
+    return {
+      success: false,
+      trama: null,
+      error: `Frame too short: expected ${requiredLength} hex characters (value size: ${sizeValue}), received ${cadena.length}. Frame type: ${trama.idTrama}, Frame ID: ${trama.idFrame}, Session: ${trama.idSessionH}${trama.idSessionL}`
+    };
+  }
+
+  trama.value = cadena.slice(offset, offset + sizeValue);
   offset += sizeValue;
 
-  trama.crc = cadena.substr(offset, 2 * charPerByte);
-  // console.log({
-  //   sizeStr: trama.size,
-  //   sizeValue,
-  //   valueLength: trama.value.length,
-  //   remaining: cadena.length - offset,
-  // });
-  if (trama.crc == calcularCRC(cadena.substr(0, offset))) return trama;
-  return null;
+  trama.crc = cadena.slice(offset, offset + 2 * charPerByte);
+  
+  // Validate that CRC was extracted (should be 4 hex characters)
+  if (!trama.crc || trama.crc.length !== 2 * charPerByte) {
+    return {
+      success: false,
+      trama: null,
+      error: `CRC extraction failed: expected 4 hex characters, got '${trama.crc}' (length: ${trama.crc ? trama.crc.length : 0}). Frame type: ${trama.idTrama}, Frame ID: ${trama.idFrame}, Session: ${trama.idSessionH}${trama.idSessionL}`
+    };
+  }
+  
+  // Validate CRC
+  const frameWithoutCrc = cadena.slice(0, offset);
+  const expectedCrc = calcularCRC(frameWithoutCrc);
+  const receivedCrc = trama.crc.toLowerCase();
+  const expectedCrcLower = expectedCrc.toLowerCase();
+  
+  if (receivedCrc !== expectedCrcLower) {
+    const errorMessage = `CRC validation failed: expected ${expectedCrcLower}, received ${receivedCrc}. Frame type: ${trama.idTrama}, Frame ID: ${trama.idFrame}, Session: ${trama.idSessionH}${trama.idSessionL}`;
+    return {
+      success: false,
+      trama: null,
+      error: errorMessage
+    };
+  }
+  
+  return {
+    success: true,
+    trama: trama,
+    error: null
+  };
 }
 
 function parseAutenticacion(cadena, trama) {
   let offset = 7 * charPerByte;
 
-  trama.iMEI = cadena.substr(offset, 21 * charPerByte);
+  trama.iMEI = cadena.slice(offset, offset + 21 * charPerByte);
   offset += 21 * charPerByte;
 
-  trama.usuario = cadena.substr(offset, 21 * charPerByte);
+  trama.usuario = cadena.slice(offset, offset + 21 * charPerByte);
   offset += 21 * charPerByte;
 
-  trama.password = cadena.substr(offset, 21 * charPerByte);
+  trama.password = cadena.slice(offset, offset + 21 * charPerByte);
   offset += 21 * charPerByte;
 
-  trama.name = cadena.substr(offset, 40 * charPerByte);
+  trama.name = cadena.slice(offset, offset + 40 * charPerByte);
   offset += 40 * charPerByte;
 
   return trama;
 }
 
+/**
+ * Parses READ frame data to extract date, duration, repetitions, and reading data
+ * READ frame value structure (after size field):
+ * - Bytes 0-3 (hex 0-7): Date (4 bytes, timestamp in little-endian)
+ * - Bytes 4-7 (hex 8-15): Duration (4 bytes, seconds in hex, little-endian)
+ * - Byte 8 (hex 16-17): Repetitions (1 byte)
+ * - Bytes 9+ (hex 18+): Reading data (up to 128 bytes)
+ * @param {string} valueHex - Value field in hex format
+ * @returns {object} { date: string, duration: number, repetitions: number, readingData: string }
+ */
+function parseReadFrameData(valueHex) {
+  if (!valueHex || valueHex.length < 18) {
+    // Need at least 9 bytes (18 hex chars): date(8) + duration(8) + repetitions(2)
+    return { date: null, duration: null, repetitions: null, readingData: valueHex || "" };
+  }
+
+  // Extract date (bytes 0-3, hex chars 0-7) - stored in little-endian format
+  const dateHex = valueHex.slice(0, 8);
+  // Convert from little-endian to big-endian for parsing
+  const dateHexBE = dateHex.slice(6, 8) + dateHex.slice(4, 6) + dateHex.slice(2, 4) + dateHex.slice(0, 2);
+  const dateTimestamp = parseInt(dateHexBE, 16);
+  const date = new Date(dateTimestamp * 1000); // Convert Unix timestamp to Date
+  const dateStr = date.toISOString();
+
+  // Extract duration (bytes 4-7, hex chars 8-15) - stored in little-endian format
+  const durationHex = valueHex.slice(8, 16);
+  // Convert from little-endian to big-endian for parsing
+  const durationHexBE = durationHex.slice(6, 8) + durationHex.slice(4, 6) + durationHex.slice(2, 4) + durationHex.slice(0, 2);
+  const duration = parseInt(durationHexBE, 16);
+
+  // Extract repetitions (byte 8, hex chars 16-17)
+  const repetitionsHex = valueHex.slice(16, 18);
+  const repetitions = parseInt(repetitionsHex, 16);
+
+  // Extract reading data (bytes 9+, hex chars 18+)
+  const readingData = valueHex.slice(18);
+
+  return { date: dateStr, duration, repetitions, readingData };
+}
+
+/**
+ * Gets frame type description for READ frames
+ * @param {string} frameTypeHex - Frame type byte in hex (from trama.ack field)
+ * @returns {string} Frame type description
+ */
+function getReadFrameTypeDescription(frameTypeHex) {
+  if (!frameTypeHex) return "Unknown";
+  
+  const frameType = parseInt(frameTypeHex, 16);
+  
+  switch (frameType) {
+    case 0x00:
+      return "Trama periódica (Periodic)";
+    case 0x01:
+      return "Medida forzada (Forced measurement)";
+    case 0x02:
+      return "Por FOTA (By FOTA)";
+    case 0xAB:
+      return "Fragmentada B/A (Fragmented B/A)";
+    default:
+      return `Unknown type (0x${frameTypeHex})`;
+  }
+}
+
 function getSizeFromLittleEndian(sizeStr) {
   const size =
-    sizeStr.substr(charPerByte, charPerByte) + sizeStr.substr(0, charPerByte);
+    sizeStr.slice(charPerByte, charPerByte * 2) + sizeStr.slice(0, charPerByte);
   return parseInt(size, 16) * charPerByte;
 }
 
 function getName(tramaCompleta) {
   const offset = 70 * charPerByte;
 
-  const hexName = tramaCompleta.substr(offset, 40 * charPerByte);
+  const hexName = tramaCompleta.slice(offset, offset + 40 * charPerByte);
   const name = Buffer.from(hexName, "hex").toString("ascii");
 
   return name.replace(/\x00+$/, "");
 }
-function findName(trama, callStack) {
-  // console.log("findName");
-  // console.log(trama);
-  // console.log(callStack);
-
-  if (!callStack || callStack.length < 1) return null;
-  let element = callStack.find(
-    (element) =>
-      element.idSessionH === trama.idSessionH &&
-      element.idSessionL === trama.idSessionL
-  );
-
-  if (!element) return null;
-  return element.topic;
+function findName(trama) {
+  // Find topic using activeSessions instead of callStack
+  if (!trama.idSessionH || !trama.idSessionL) return null;
+  return getSessionTopic(trama.idSessionH, trama.idSessionL);
 }
 
 function getTramas(grupoDeTramas) {
@@ -211,12 +294,24 @@ function getTramas(grupoDeTramas) {
   //  console.log(`totalSize: ${totalSize}`);
 
   while (offset < totalSize) {
-    const actual = parseTrama(grupoDeTramas.value.substr(offset));
-    response.push(actual);
-
-    const sizeValue = getSizeFromLittleEndian(actual.size);
-    //sizeValue quita exactamente los caracteres de Value, tenemos que quitar la cabecera y el crc además de sizeValue
-    offset += (7 + 2) * charPerByte + sizeValue;
+    const parseResult = parseTrama(grupoDeTramas.value.slice(offset));
+    
+    // Only process successfully parsed tramas
+    if (parseResult.success && parseResult.trama) {
+      response.push(parseResult.trama);
+      const sizeValue = getSizeFromLittleEndian(parseResult.trama.size);
+      //sizeValue quita exactamente los caracteres de Value, tenemos que quitar la cabecera y el crc además de sizeValue
+      offset += (7 + 2) * charPerByte + sizeValue;
+    } else {
+      // If parsing fails, log error and break to avoid infinite loop
+      if (parseResult.error) {
+        console.error(`❌ Error parsing grouped trama at offset ${offset}: ${parseResult.error}`);
+      } else {
+        console.error(`❌ Error parsing grouped trama at offset ${offset}: Invalid frame structure`);
+      }
+      // Break to avoid infinite loop if we can't parse the frame
+      break;
+    }
 
     // console.log(actual);
     // console.log(`offset: ${offset}`);
@@ -227,55 +322,67 @@ function getTramas(grupoDeTramas) {
 /* -------------------------- Parseadores-------------------------- */
 
 /* -------------------------- Contestadores------------------------ */
-function buildAutenticacion(trama, callStack) {
-  //si ya estaba autenticado, borro la sesión para empezar de nuevo
-  let index = callStack.indexOf((element) => element.topic === trama.topic);
-  if (index >= 0) callStack.splice(index, 1);
+function buildAutenticacion(trama, generateSequentialSessionId) {
+  // If already authenticated with same topic, remove old session
+  // (This is handled by createOrUpdateSession which overwrites existing sessions)
 
-  //miramos si ya estaba la trama en el callstack (no recibieron confirmación)
-  let id = "";
-  id = generarIdUnico(callStack);
-  trama.idSessionH = id.slice(0, 2);
-  trama.idSessionL = id.slice(2, 4);
-  callStack.push(trama);
+  // Generate sequential session ID from server
+  // Session ID is a 2-byte number split into high (H) and low (L) bytes
+  const sessionIds = generateSequentialSessionId();
+  if (!sessionIds) {
+    console.error("❌ Failed to generate session ID for authentication");
+    return null;
+  }
+  
+  trama.idSessionH = sessionIds.idSessionH;
+  trama.idSessionL = sessionIds.idSessionL;
 
-  return buildACK(trama, callStack);
+  // Create session in activeSessions with topic
+  createOrUpdateSession(trama.idSessionH, trama.idSessionL, trama.idFrame, trama.topic);
+
+  let response = buildACK(trama);
+  setSessionLastMessage(trama.idSessionH, trama.idSessionL, response);
+  return response;
 }
 
-function buildEnd(trama, callStack) {
-  //quitamos la sesión de la trama, no devolvemos por que es fin de transmisión
-  let index = callStack.indexOf((element) => element.topic === trama.topic);
-  if (index >= 0) callStack.splice(index, 1);
+function buildEnd(trama) {
+  // Remove session from activeSessions (end of transmission)
+  removeSession(trama.idSessionH, trama.idSessionL);
 }
 
-function buildACK(trama, callStack) {
-  //buscamos en el callStack la sesión, para actualizarla
-  let session = callStack.find(
-    (element) =>
-      element.idSessionH === trama.idSessionH &&
-      element.idSessionL === trama.idSessionL
-  );
-  if (!session || session === undefined) return null;
+function buildLastResponse(trama) {
+  // Get last message from activeSessions
+  return getSessionLastMessage(trama.idSessionH, trama.idSessionL);
+}
 
-  session.idFrame = trama.idFrame;
-  session.idTrama = trama.idTrama;
+function buildACK(trama) {
+  // Get session from activeSessions
+  const session = getSession(trama.idSessionH, trama.idSessionL);
+  if (!session) return null;
+
+  // Update frame ID in session
+  updateSessionFrameId(trama.idSessionH, trama.idSessionL, trama.idFrame);
 
   let respuesta = {};
-  respuesta.idTrama = "41";
-  respuesta.ack = "00";
-  respuesta.idFrame = session.idFrame;
-  respuesta.idSessionH = session.idSessionH;
-  respuesta.idSessionL = session.idSessionL;
+  respuesta.idTrama = tConst.CODE_S_ACK;
+  respuesta.ack = tConst.CODE_OK;
+  respuesta.idFrame = trama.idFrame;
+  respuesta.idSessionH = trama.idSessionH;
+  respuesta.idSessionL = trama.idSessionL;
   respuesta.size = "0000";
   respuesta.value = "";
 
   const cadena = buildTrama(respuesta, false);
-  return cadena + calcularCRC(cadena);
+  let response = cadena + calcularCRC(cadena);
+  
+  // Store last message in session
+  setSessionLastMessage(trama.idSessionH, trama.idSessionL, response);
+  return response;
 }
 function buildNACK(trama) {
   let respuesta = {};
-  respuesta.idTrama = "41";
-  respuesta.ack = "10";
+  respuesta.idTrama = tConst.CODE_S_ACK;
+  respuesta.ack = tConst.CODE_NOK;
   respuesta.idFrame = trama ? trama.idFrame : null;
   respuesta.idSessionH = trama ? trama.idSessionH : null;
   respuesta.idSessionL = trama ? trama.idSessionL : null;
@@ -289,8 +396,8 @@ function buildNACKDesdeMensaje(mensaje) {
     mensaje += "0";
   }
   let respuesta = {};
-  respuesta.idTrama = "41";
-  respuesta.ack = "10";
+  respuesta.idTrama = tConst.CODE_S_ACK;
+  respuesta.ack = tConst.CODE_NOK;
   respuesta.idFrame = mensaje.slice(2 * charPerByte, 3 * charPerByte);
   respuesta.idSessionH = mensaje.slice(3 * charPerByte, 4 * charPerByte);
   respuesta.idSessionL = mensaje.slice(4 * charPerByte, 5 * charPerByte);
@@ -305,17 +412,19 @@ function buildNACKDesdeMensaje(mensaje) {
 /* -------------------------- Contestadores------------------------ */
 
 export {
-  id,
   esTST,
   calcularCRC,
   buildTrama,
   parseTrama,
   parseAutenticacion,
+  parseReadFrameData,
+  getReadFrameTypeDescription,
   getName,
   findName,
   getTramas,
   buildAutenticacion,
   buildEnd,
+  buildLastResponse,
   buildACK,
   buildNACK,
   buildNACKDesdeMensaje,

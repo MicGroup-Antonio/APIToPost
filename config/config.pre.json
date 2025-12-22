@@ -7,11 +7,14 @@
   "serverMQTT": "mqtt://10.0.70.99:8182",
   "discriminator": 3,
   "topic": "#",
-  "puerto": 9999,
+  "puerto": 3005,
   "arrDiscriminator": {
     "WMBUS": 3,
     "SIGFOX": 2,
     "INETCOUNTERS": 1
   },
-  "arrDiscriminatorRV": ["MQTT", "INETCOUNTERS", "SIGFOX", "WMBUS"]
+  "arrDiscriminatorRV": ["MQTT", "INETCOUNTERS", "SIGFOX", "WMBUS"],
+  "sessionCleanupIntervalMinutes": 10,
+  "authUser": "user",
+  "authPassword": "pass"
 }

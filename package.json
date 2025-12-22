@@ -5,6 +5,7 @@
   "main": "server.js",
   "scripts": {
     "serve": "node server.js",
+    "serve-test": "node server-test.js",
     "send": "node sender.js"
   },
   "dependencies": {

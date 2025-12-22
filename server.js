@@ -1,5 +1,7 @@
-import express from "express";
-import axios from "axios";
+// Initialize console logging first (before any other imports that might use console)
+import "./src/logger.js";
+
+import dgram from "dgram";
 import dotenv from "dotenv";
 import { processTstProtocol } from "./src/processProtocol.js";
 import { buildNACK } from "./src/tst.js";
@@ -15,34 +17,74 @@ if (!configPath) {
 }
 
 const config = require(configPath);
-const app = express();
-app.use(express.json());
 
-// Escucha todas las rutas y métodos
-app.all("*", async (req, res) => {
+// Crear socket UDP
+const server = dgram.createSocket("udp4");
+
+// Manejar mensajes UDP entrantes
+server.on("message", async (msg, rinfo) => {
   try {
-    const path = req.path.slice(1);
-    // const query = req.originalUrl;
-    // const body = req.body;
-    // console.log(path);
+    console.log(`[${new Date().toISOString()}] Mensaje recibido de IP: ${rinfo.address}:${rinfo.port}`);
+    console.log(`Datos recibidos: ${msg.toString("hex")}`);
 
-    let response = await processTstProtocol(path);
+    let response = await processTstProtocol(msg);
+    
+    // If response is null, either:
+    // 1. Frame was discarded (no active session for non-auth frame)
+    // 2. END frame (doesn't require response)
+    // Don't send any response
+    if (response === null) {
+      // Check if it's an END frame by looking at the message
+      const msgHex = msg.toString("hex");
+      const frameType = msgHex.slice(0, 2).toLowerCase();
+      if (frameType === "c2") {
+        console.log("✅ End of Transmission frame processed - no response sent");
+      } else {
+        console.log("⚠️ Frame discarded: No response sent");
+      }
+      return;
+    }
+    
     console.log(`respondiendo ${response.toString("hex")}`);
 
-    res.status(200).send(response);
-  } catch (error) {
-    console.error("Error reenviando la solicitud:", error.message);
-    let nack = buildNACK({
-      idFrame: path.slice(2 * 2, 3 * 2),
-      idSessionH: path.slice(3 * 2, 4 * 2),
-      idSessionL: path.slice(4 * 2, 5 * 2),
+    // Enviar respuesta al cliente
+    server.send(response, rinfo.port, rinfo.address, (err) => {
+      if (err) {
+        console.error("Error enviando respuesta:", err.message);
+      } else {
+        console.log(`Respuesta enviada a ${rinfo.address}:${rinfo.port}`);
+      }
     });
-    const buffer = Buffer.from(nack, "hex");
-    res.status(error.response ? error.response.status : 500).send(buffer);
+  } catch (error) {
+    console.error("Error procesando el mensaje:", error.message);
+    try {
+      // Intentar extraer información de la trama para construir NACK
+      const msgHex = msg.toString("hex");
+      let nack = buildNACK({
+        idFrame: msgHex.slice(2 * 2, 3 * 2),
+        idSessionH: msgHex.slice(3 * 2, 4 * 2),
+        idSessionL: msgHex.slice(4 * 2, 5 * 2),
+      });
+      const buffer = Buffer.from(nack, "hex");
+      server.send(buffer, rinfo.port, rinfo.address, (err) => {
+        if (err) {
+          console.error("Error enviando NACK:", err.message);
+        }
+      });
+    } catch (nackError) {
+      console.error("Error construyendo NACK:", nackError.message);
+    }
   }
 });
 
-const PORT = config.puerto || 9999;
-app.listen(PORT, () => {
-  console.log(`Servidor escuchando en http://localhost:${PORT}`);
+// Manejar errores del socket
+server.on("error", (err) => {
+  console.error(`Error del servidor UDP: ${err.message}`);
+  server.close();
+});
+
+// Escuchar en el puerto configurado
+const PORT = config.puerto || 3005;
+server.bind(PORT, () => {
+  console.log(`Servidor UDP escuchando en puerto ${PORT}`);
 });

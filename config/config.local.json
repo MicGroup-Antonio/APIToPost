@@ -1,16 +1,19 @@
 {
-  "pguser": "avant_app",
+  "pguser": "postgres",
   "pghost": "localhost",
-  "pgpassword": "123_Avant_123",
-  "pgdatabase": "avant",
+  "pgpassword": "postgres",
+  "pgdatabase": "mic-pro-04",
   "pgport": "5432",
   "discriminator": 3,
   "topic": "#",
-  "puerto": 9999,
+  "puerto": 3005,
   "arrDiscriminator": {
     "WMBUS": 3,
     "SIGFOX": 2,
     "INETCOUNTERS": 1
   },
-  "arrDiscriminatorRV": ["MQTT", "INETCOUNTERS", "SIGFOX", "WMBUS"]
+  "arrDiscriminatorRV": ["MQTT", "INETCOUNTERS", "SIGFOX", "WMBUS"],
+  "sessionCleanupIntervalMinutes": 1,
+  "authUser": "user",
+  "authPassword": "pass"
 }
