@@ -6,13 +6,19 @@
   "scripts": {
     "serve": "node server.js",
     "serve-test": "node server-test.js",
-    "send": "node sender.js"
+    "send": "node sender.js",
+    "config": "cross-env FORCE_COLOR=1 node src/device-config/device-config.js"
   },
   "dependencies": {
     "axios": "^1.7.0",
+    "better-sqlite3": "^12.5.0",
+    "chalk": "^5.6.2",
     "dotenv": "^16.6.1",
     "express": "^4.19.0",
     "node-fetch": "^3.3.2",
     "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0"
   }
 }
