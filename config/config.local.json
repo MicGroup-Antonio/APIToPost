@@ -1,6 +1,6 @@
 {
   "pguser": "postgres",
-  "pghost": "postgres17",
+  "pghost": "localhost",
   "pgpassword": "postgres",
   "pgdatabase": "mic-pro-04",
   "pgport": "5432",

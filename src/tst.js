@@ -106,6 +106,16 @@ function parseTrama(cadena) {
 
   let offset = 0;
 
+  // Minimum frame length: header (5 bytes) + size (2 bytes) + CRC (2 bytes) = 9 bytes = 18 hex chars
+  const minFrameLength = 9 * charPerByte;
+  if (cadena.length < minFrameLength) {
+    return {
+      success: false,
+      trama: null,
+      error: `Frame too short: expected at least ${minFrameLength} hex characters, received ${cadena.length}`
+    };
+  }
+
   trama.idTrama = cadena.slice(offset, offset + charPerByte);
   offset += charPerByte;
   trama.ack = cadena.slice(offset, offset + charPerByte);
@@ -120,10 +130,30 @@ function parseTrama(cadena) {
   offset += 2 * charPerByte;
 
   const sizeValue = getSizeFromLittleEndian(trama.size);
+  
+  // Check if frame is long enough to contain the value field and CRC
+  const requiredLength = offset + sizeValue + 2 * charPerByte; // offset + value + CRC
+  if (cadena.length < requiredLength) {
+    return {
+      success: false,
+      trama: null,
+      error: `Frame too short: expected ${requiredLength} hex characters (value size: ${sizeValue}), received ${cadena.length}. Frame type: ${trama.idTrama}, Frame ID: ${trama.idFrame}, Session: ${trama.idSessionH}${trama.idSessionL}`
+    };
+  }
+
   trama.value = cadena.slice(offset, offset + sizeValue);
   offset += sizeValue;
 
   trama.crc = cadena.slice(offset, offset + 2 * charPerByte);
+  
+  // Validate that CRC was extracted (should be 4 hex characters)
+  if (!trama.crc || trama.crc.length !== 2 * charPerByte) {
+    return {
+      success: false,
+      trama: null,
+      error: `CRC extraction failed: expected 4 hex characters, got '${trama.crc}' (length: ${trama.crc ? trama.crc.length : 0}). Frame type: ${trama.idTrama}, Frame ID: ${trama.idFrame}, Session: ${trama.idSessionH}${trama.idSessionL}`
+    };
+  }
   
   // Validate CRC
   const frameWithoutCrc = cadena.slice(0, offset);
