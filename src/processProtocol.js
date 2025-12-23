@@ -359,9 +359,9 @@ function processAuthenticationFrame(trama, message, config) {
 /**
  * Processes an ASK (configuration request) frame
  * @param {object} trama - Parsed frame object
- * @returns {object} { respuesta: string, logEntry: string }
+ * @returns {Promise<object>} { respuesta: string, logEntry: string, pendingConfigs: Array }
  */
-function processAskFrame(trama) {
+async function processAskFrame(trama) {
   let respuesta = "";
   let logEntry = "Trama de petición de configuración";
   console.log(logEntry);
@@ -394,7 +394,57 @@ function processAskFrame(trama) {
     }
   }
 
-  return { respuesta, logEntry };
+  // Get session to find device topic/name
+  let pendingConfigs = [];
+  if (trama.idSessionH && trama.idSessionL) {
+    const session = getSession(trama.idSessionH, trama.idSessionL);
+    console.log(`🔍 ASK Frame - Session: ${trama.idSessionH}${trama.idSessionL}, Session exists: ${!!session}, Topic: ${session?.topic || 'none'}`);
+    
+    if (session && session.topic) {
+      // Try to find device by topic/name
+      try {
+        // Use dynamic import for ES modules - fix path (from src/processProtocol.js to src/device-config/db.js)
+        const { deviceDB, deviceConfigsDB } = await import("./device-config/db.js");
+        const devices = deviceDB.getAll();
+        console.log(`🔍 Checking ${devices.length} device(s) in database for topic: "${session.topic}"`);
+        
+        const device = devices.find(d => d.name === session.topic);
+        
+        if (device) {
+          console.log(`✅ Device found: ${device.name} (ID: ${device.id})`);
+          // Get pending configurations for this device
+          pendingConfigs = deviceConfigsDB.getPendingByDeviceId(device.id);
+          console.log(`🔍 Found ${pendingConfigs.length} pending configuration(s) for device: ${device.name}`);
+          
+          if (pendingConfigs && pendingConfigs.length > 0) {
+            logEntry += ` | Found ${pendingConfigs.length} pending configuration(s) for device: ${device.name}`;
+            console.log(`📦 Found ${pendingConfigs.length} pending configuration(s) for device: ${device.name}`);
+            pendingConfigs.forEach((cfg, idx) => {
+              console.log(`   ${idx + 1}. ${cfg.config_type} (${cfg.config_code}) - Created: ${cfg.created_at}`);
+            });
+          } else {
+            console.log(`ℹ️ No pending configurations for device: ${device.name}`);
+          }
+        } else {
+          console.log(`⚠️ Device not found in database for topic: "${session.topic}"`);
+          console.log(`   Available devices: ${devices.map(d => d.name).join(', ') || 'none'}`);
+        }
+      } catch (error) {
+        console.error(`❌ Error checking pending configs: ${error.message}`);
+        console.error(error.stack);
+      }
+    } else {
+      if (!session) {
+        console.log(`⚠️ Session not found for ASK frame`);
+      } else if (!session.topic) {
+        console.log(`⚠️ Session exists but has no topic set`);
+      }
+    }
+  } else {
+    console.log(`⚠️ ASK Frame missing session IDs`);
+  }
+
+  return { respuesta, logEntry, pendingConfigs };
 }
 
 /**
@@ -834,9 +884,12 @@ async function processTstProtocol(message) {
       logEntry = authResult.logEntry;
       break;
     case tConst.CODE_R_ASK: // Trama de petición de configuración
-      const askResult = processAskFrame(trama);
+      const askResult = await processAskFrame(trama);
       respuesta = askResult.respuesta;
       logEntry = askResult.logEntry;
+      // Store pending configs in trama for later use in server.js
+      trama.pendingConfigs = askResult.pendingConfigs || [];
+      console.log(`🔍 ASK processed - Pending configs stored in trama: ${trama.pendingConfigs.length}`);
       break;
     case tConst.CODE_R_INFO: // Trama de información
       logEntry = "Trama de información";
@@ -889,8 +942,17 @@ async function processTstProtocol(message) {
   logger(logEntry);
   logger(respuesta);
 
+  // Return response as Buffer, along with pending configs if any
   const buffer = Buffer.from(respuesta, "hex");
-  console.log("activeSessions:", activeSessions);
+  // Attach pending configs to buffer object (if any)
+  if (trama.pendingConfigs && trama.pendingConfigs.length > 0) {
+    buffer.pendingConfigs = trama.pendingConfigs;
+    buffer.sessionH = trama.idSessionH;
+    buffer.sessionL = trama.idSessionL;
+    console.log(`✅ Attached ${trama.pendingConfigs.length} pending config(s) to response buffer`);
+  } else {
+    console.log(`ℹ️ No pending configs to attach (trama.pendingConfigs: ${trama.pendingConfigs ? 'empty array' : 'undefined'})`);
+  }
   return buffer;
 }
 

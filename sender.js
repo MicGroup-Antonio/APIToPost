@@ -1,5 +1,6 @@
 import dgram from "dgram";
-import { calcularCRC } from "./src/tst.js";
+import { calcularCRC, parseTrama } from "./src/tst.js";
+import * as tConst from "./src/const.js";
 
 import readline from "readline";
 
@@ -99,6 +100,31 @@ function incrementFrameId() {
   let num = parseInt(deviceState.frameId, 16);
   num = (num + 1) % 256; // Wrap at 255 (0xFF)
   deviceState.frameId = num.toString(16).toLowerCase().padStart(2, "0");
+}
+
+/**
+ * Get configuration code name for display
+ * @param {string} code - Configuration code (hex)
+ * @returns {string} Configuration name
+ */
+function getConfigCodeName(code) {
+  const configNames = {
+    "01": "PSM Configuration",
+    "02": "Network Configuration",
+    "03": "Server Parameters",
+    "04": "Transmission Windows",
+    "05": "Reading Windows",
+    "06": "DNS Configuration",
+    "07": "Authorization Parameters",
+    "08": "Magnet Activation",
+    "09": "RTC Adjustment",
+    "10": "NTP Configuration",
+    "11": "Remote Server Parameters",
+    "13": "Max Connection Time",
+    "14": "Temporary Max Connection Time",
+    "15": "WMBUS Reading Time"
+  };
+  return configNames[code] || `Unknown (${code})`;
 }
 
 /**
@@ -400,50 +426,166 @@ let hex = hexOpciones["auth"].toLowerCase();
               }
             }, 10000); // 10 segundos para dar tiempo a NAT traversal
             
-            // Escuchar respuesta
-            client.on("message", (msg, rinfo) => {
-              responseReceived = true;
-              clearTimeout(timeout);
+            // Track received configurations
+            let configCount = 0;
+            let configTimeout = null;
+            const CONFIG_WAIT_TIMEOUT = 2000; // Wait 2 seconds for next config after ASK
+            
+            // Function to build ACK frame manually (since we don't have session manager in sender)
+            function buildACKFrame(trama) {
+              const ackFrame = {
+                idTrama: tConst.CODE_S_ACK,
+                ack: tConst.CODE_OK,
+                idFrame: trama.idFrame,
+                idSessionH: trama.idSessionH,
+                idSessionL: trama.idSessionL,
+                size: "0000",
+                value: ""
+              };
+              // Build frame without CRC
+              let frameHex = ackFrame.idTrama + ackFrame.ack + ackFrame.idFrame + 
+                            ackFrame.idSessionH + ackFrame.idSessionL + ackFrame.size + ackFrame.value;
+              // Calculate CRC
+              const crc = calcularCRC(frameHex);
+              return frameHex + crc;
+            }
+            
+            // Function to handle incoming messages
+            const handleMessage = (msg, rinfo) => {
               const respuesta = msg.toString("hex");
-              console.log(`\n📥 Respuesta recibida de ${rinfo.address}:${rinfo.port}`);
+              const frameType = respuesta.slice(0, 2).toLowerCase();
+              
+              console.log(`\n📥 Mensaje recibido de ${rinfo.address}:${rinfo.port}`);
+              console.log(`   Tipo de trama: ${frameType}`);
               console.log(`   Hex: ${respuesta}`);
               
-              if (respuesta.slice(0, 2) !== "41") {
-                console.log("⚠️ No es ACK/NACK (código: " + respuesta.slice(0, 2) + ")");
-              } else if (respuesta.slice(2, 4) === "00") {
-                console.log("✅ Es ACK");
-                
-                // Update device state from server response
-                updateDeviceStateFromResponse(respuesta);
-                
-                // Increment frame ID for next message (unless in out-of-order testing mode)
-                if (!outOfOrderTestingMode) {
-                  incrementFrameId();
-                  console.log(`📱 Próximo Frame ID: ${deviceState.frameId}`);
-                } else {
-                  console.log(`⚠️ Modo out-of-order activo: Frame ID NO se incrementó automáticamente`);
-                  console.log(`   Frame ID actual: ${deviceState.frameId}`);
-                  console.log(`   (Use opción 6 para cambiar el Frame ID manualmente)`);
-                }
-                
-                // Mark as authenticated if this was auth response
-                if (currentMessageType === "auth") {
-                  deviceState.authenticated = true;
-                  console.log("🔐 Dispositivo autenticado");
-                }
-              } else if (respuesta.slice(2, 4) === "01") {
-                console.log("❌ Es NACK - El servidor rechazó el mensaje");
-                console.log(`   Frame ID enviado: ${deviceState.frameId}`);
-                console.log(`   Session: ${deviceState.sessionH}${deviceState.sessionL}`);
-              } else {
-                console.log(
-                  `⚠️ Código desconocido: ${respuesta.slice(0, 2)} - ${respuesta.slice(2, 4)}`
-                );
+              // Parse the frame
+              const parseResult = parseTrama(respuesta);
+              
+              if (!parseResult.success) {
+                console.log(`⚠️ Error al parsear trama: ${parseResult.error}`);
+                return;
               }
               
-              client.close();
-              resolve();
-            });
+              const trama = parseResult.trama;
+              
+              // Handle CONFIG frames (CODE_S_CONF = "11")
+              if (frameType === tConst.CODE_S_CONF.toLowerCase()) {
+                configCount++;
+                console.log(`\n═══════════════════════════════════════════════════════`);
+                console.log(`📦 CONFIGURACIÓN RECIBIDA #${configCount}`);
+                console.log(`═══════════════════════════════════════════════════════`);
+                console.log(`   Config Code: ${trama.ack} (${getConfigCodeName(trama.ack)})`);
+                console.log(`   Frame ID: ${trama.idFrame}`);
+                console.log(`   Session: ${trama.idSessionH}${trama.idSessionL}`);
+                const sizeValue = parseInt(trama.size.slice(2, 4) + trama.size.slice(0, 2), 16);
+                console.log(`   Size: ${sizeValue} bytes`);
+                console.log(`   Value (hex): ${trama.value.substring(0, 80)}${trama.value.length > 80 ? '...' : ''}`);
+                console.log(`   Value length: ${trama.value.length / 2} bytes`);
+                console.log(`   CRC: ${trama.crc}`);
+                
+                // Validate CRC
+                const frameWithoutCrc = respuesta.substring(0, respuesta.length - 4);
+                const expectedCrc = calcularCRC(frameWithoutCrc);
+                if (trama.crc.toLowerCase() === expectedCrc.toLowerCase()) {
+                  console.log(`   ✅ CRC válido`);
+                } else {
+                  console.log(`   ❌ CRC inválido (esperado: ${expectedCrc}, recibido: ${trama.crc})`);
+                }
+                
+                // Send ACK for the configuration
+                const ackHex = buildACKFrame(trama);
+                const ackBuffer = Buffer.from(ackHex, "hex");
+                client.send(ackBuffer, rinfo.port, rinfo.address, (err) => {
+                  if (err) {
+                    console.error(`   ❌ Error enviando ACK: ${err.message}`);
+                  } else {
+                    console.log(`   ✅ ACK enviado para configuración #${configCount}`);
+                  }
+                });
+                
+                // Update device state frame ID
+                deviceState.frameId = trama.idFrame;
+                if (!outOfOrderTestingMode) {
+                  incrementFrameId();
+                }
+                
+                // Reset timeout for next config
+                if (configTimeout) {
+                  clearTimeout(configTimeout);
+                }
+                configTimeout = setTimeout(() => {
+                  console.log(`\n✅ Recepción de configuraciones completada (${configCount} configuración/es recibida/s)`);
+                  if (currentMessageType === "ask") {
+                    console.log(`   Se recibieron ${configCount} configuración(es) después del ASK`);
+                  }
+                  client.close();
+                  resolve();
+                }, CONFIG_WAIT_TIMEOUT);
+                
+                return; // Don't process as regular response
+              }
+              
+              // Handle regular ACK/NACK responses
+              if (frameType === tConst.CODE_S_ACK.toLowerCase()) {
+                responseReceived = true;
+                clearTimeout(timeout);
+                
+                if (trama.ack === tConst.CODE_OK) {
+                  console.log("✅ Es ACK");
+                  
+                  // Update device state from server response
+                  updateDeviceStateFromResponse(respuesta);
+                  
+                  // Increment frame ID for next message (unless in out-of-order testing mode)
+                  if (!outOfOrderTestingMode) {
+                    incrementFrameId();
+                    console.log(`📱 Próximo Frame ID: ${deviceState.frameId}`);
+                  } else {
+                    console.log(`⚠️ Modo out-of-order activo: Frame ID NO se incrementó automáticamente`);
+                    console.log(`   Frame ID actual: ${deviceState.frameId}`);
+                    console.log(`   (Use opción 6 para cambiar el Frame ID manualmente)`);
+                  }
+                  
+                  // Mark as authenticated if this was auth response
+                  if (currentMessageType === "auth") {
+                    deviceState.authenticated = true;
+                    console.log("🔐 Dispositivo autenticado");
+                  }
+                  
+                  // If this is ASK response, wait for configurations
+                  if (currentMessageType === "ask") {
+                    console.log(`\n⏳ Esperando configuraciones del servidor...`);
+                    console.log(`   (Timeout: ${CONFIG_WAIT_TIMEOUT / 1000} segundos)`);
+                    // Don't close client yet - wait for configs
+                    // Set timeout in case no configs arrive
+                    configTimeout = setTimeout(() => {
+                      console.log(`\nℹ️ No se recibieron configuraciones después del ASK`);
+                      client.close();
+                      resolve();
+                    }, CONFIG_WAIT_TIMEOUT);
+                    return; // Don't close client yet
+                  }
+                } else if (trama.ack === tConst.CODE_NOK) {
+                  console.log("❌ Es NACK - El servidor rechazó el mensaje");
+                  console.log(`   Frame ID enviado: ${deviceState.frameId}`);
+                  console.log(`   Session: ${deviceState.sessionH}${deviceState.sessionL}`);
+                } else {
+                  console.log(`⚠️ Código ACK desconocido: ${trama.ack}`);
+                }
+              } else {
+                console.log(`⚠️ Tipo de trama no reconocido: ${frameType}`);
+              }
+              
+              // Close client if not waiting for configs
+              if (currentMessageType !== "ask" || configTimeout === null) {
+                client.close();
+                resolve();
+              }
+            };
+            
+            // Escuchar respuesta
+            client.on("message", handleMessage);
             
             // Manejar errores
             client.on("error", (err) => {
