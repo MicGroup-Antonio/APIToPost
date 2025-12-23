@@ -1,7 +1,7 @@
 import { calcularCRC, buildTrama } from "../tst.js";
 import * as tConst from "../const.js";
 import readline from "readline";
-import { initDatabase, closeDatabase, getDatabase, deviceDB, deviceConfigsDB } from "./db.js";
+import { initDatabase, closeDatabase, getDatabase, deviceDB, deviceConfigsDB, transmissionWindowsDB } from "./db.js";
 import chalk from "chalk";
 
 // Force color output for Git Bash and Windows terminals
@@ -52,15 +52,31 @@ const configOptions = [
   { code: tConst.CODE_C_WMBUS, name: "WMBUS Reading Time", description: "WMBUS reading time configuration" },
 ];
 
+// Create a single readline interface for the entire script
+let rl = null;
+
+function createReadline() {
+  if (!rl) {
+    rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+  }
+  return rl;
+}
+
+function closeReadline() {
+  if (rl) {
+    rl.close();
+    rl = null;
+  }
+}
+
 function ask(question) {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
+  const rl = createReadline();
 
   return new Promise((resolve) =>
     rl.question(question, (answer) => {
-      rl.close();
       resolve(answer);
     })
   );
@@ -301,17 +317,7 @@ async function getConfigParameters(configCode) {
       return serverValue;
       
     case tConst.CODE_C_SEND:
-      console.log(chalk.cyan("\n=== Transmission Windows ==="));
-      let sendValue;
-      while (true) {
-        const hexInput = await ask(chalk.yellow("Enter transmission window configuration (hex): "));
-        if (isValidHex(hexInput)) {
-          sendValue = hexInput.trim().toLowerCase();
-          break;
-        }
-        console.log(chalk.red("❌ Invalid hex format. Please enter hexadecimal characters only (0-9, a-f)."));
-      }
-      return sendValue;
+      return await configureTransmissionWindows();
       
     case tConst.CODE_C_RECV:
       console.log(chalk.cyan("\n=== Reading Windows ==="));
@@ -472,6 +478,204 @@ async function getConfigParameters(configCode) {
       }
       return customValue;
   }
+}
+
+/**
+ * Configure transmission windows (up to 8 windows)
+ * Returns the hex value for the configuration frame
+ */
+/**
+ * Configure transmission windows (up to 8 windows)
+ * @param {Array} existingWindows - Optional array of existing windows to pre-fill
+ * Returns the hex value for the configuration frame
+ */
+async function configureTransmissionWindows(existingWindows = null) {
+  console.clear();
+  console.log(chalk.cyan("═══════════════════════════════════════════════════════"));
+  console.log(chalk.cyan.bold("         TRANSMISSION WINDOWS CONFIGURATION"));
+  console.log(chalk.cyan("═══════════════════════════════════════════════════════"));
+  console.log("");
+  console.log(chalk.yellow("You can configure up to 8 transmission windows."));
+  console.log(chalk.yellow("Each window requires:"));
+  console.log(chalk.white("  - Start time (minutes UTC, 0-1440, e.g., 720 = 12:00)"));
+  console.log(chalk.white("  - End time (minutes UTC, 0-1440, e.g., 780 = 13:00)"));
+  console.log(chalk.white("  - Sampling interval (minutes, e.g., 5)"));
+  console.log("");
+  
+  const windows = [];
+  let windowCount = 0;
+  
+  // If updating, show existing windows and allow editing
+  if (existingWindows && existingWindows.length > 0) {
+    console.log(chalk.yellow.bold("Existing Windows (you can modify or add more):"));
+    existingWindows.forEach((window) => {
+      const startHours = Math.floor(window.start_time_minutes / 60);
+      const startMins = window.start_time_minutes % 60;
+      const endHours = Math.floor(window.end_time_minutes / 60);
+      const endMins = window.end_time_minutes % 60;
+      const status = window.enabled === 1 ? chalk.green("enabled") : chalk.red("disabled");
+      console.log(chalk.white(`   Window ${window.window_number}: `) + 
+                 chalk.blue(`${String(startHours).padStart(2, '0')}:${String(startMins).padStart(2, '0')} - ${String(endHours).padStart(2, '0')}:${String(endMins).padStart(2, '0')} UTC`) +
+                 chalk.gray(` | Sampling: ${window.sampling_interval_minutes} min | `) + status);
+    });
+    console.log("");
+    
+    // Ask if user wants to keep existing windows or reconfigure
+    const keepExisting = await ask(chalk.yellow("Keep existing windows and add more? (y/n, default: n to reconfigure all): "));
+    const keepExistingBool = parseBoolean(keepExisting, false);
+    
+    if (keepExistingBool === true) {
+      // Keep existing windows, add more
+      existingWindows.forEach((window) => {
+        windows.push({
+          windowNumber: window.window_number,
+          startTimeMinutes: window.start_time_minutes,
+          endTimeMinutes: window.end_time_minutes,
+          samplingIntervalMinutes: window.sampling_interval_minutes,
+          enabled: window.enabled === 1
+        });
+        windowCount++;
+      });
+      console.log(chalk.green(`✅ Keeping ${existingWindows.length} existing window(s). You can add more.`));
+      console.log("");
+    }
+  }
+  
+  while (windowCount < 8) {
+    console.log(chalk.cyan(`\n--- Window ${windowCount + 1} ---`));
+    
+    // Check if this window already exists (when updating)
+    let existingWindow = null;
+    if (existingWindows && existingWindows.length > 0) {
+      existingWindow = existingWindows.find(w => w.window_number === windowCount + 1);
+    }
+    
+    // Ask if user wants to add/update another window
+    if (windowCount > 0 || (existingWindow && windows.length > 0)) {
+      const addMore = await ask(chalk.yellow(`Configure window ${windowCount + 1}? (y/n): `));
+      const addMoreBool = parseBoolean(addMore, false);
+      if (addMoreBool === false) {
+        break;
+      }
+    }
+    
+    // Get start time (pre-fill if updating existing)
+    let startTimeMinutes;
+    while (true) {
+      const defaultStart = existingWindow ? existingWindow.start_time_minutes.toString() : "";
+      const prompt = defaultStart ? `Start time (minutes UTC, 0-1440, current: ${defaultStart}): ` : "Start time (minutes UTC, 0-1440): ";
+      const startInput = await ask(chalk.yellow(prompt));
+      if (!startInput.trim() && defaultStart) {
+        startTimeMinutes = existingWindow.start_time_minutes;
+        break;
+      }
+      startTimeMinutes = parseInteger(startInput, 0, 1440);
+      if (startTimeMinutes !== null) {
+        break;
+      }
+      console.log(chalk.red("❌ Invalid start time. Please enter a number between 0 and 1440."));
+    }
+    
+    // Get end time (pre-fill if updating existing)
+    let endTimeMinutes;
+    while (true) {
+      const defaultEnd = existingWindow ? existingWindow.end_time_minutes.toString() : "";
+      const prompt = defaultEnd ? `End time (minutes UTC, 0-1440, current: ${defaultEnd}): ` : "End time (minutes UTC, 0-1440): ";
+      const endInput = await ask(chalk.yellow(prompt));
+      if (!endInput.trim() && defaultEnd) {
+        endTimeMinutes = existingWindow.end_time_minutes;
+        break;
+      }
+      endTimeMinutes = parseInteger(endInput, 0, 1440);
+      if (endTimeMinutes !== null && endTimeMinutes > startTimeMinutes) {
+        break;
+      }
+      if (endTimeMinutes !== null && endTimeMinutes <= startTimeMinutes) {
+        console.log(chalk.red("❌ End time must be greater than start time."));
+      } else {
+        console.log(chalk.red("❌ Invalid end time. Please enter a number between 0 and 1440."));
+      }
+    }
+    
+    // Get sampling interval (pre-fill if updating existing)
+    let samplingInterval;
+    while (true) {
+      const defaultSampling = existingWindow ? existingWindow.sampling_interval_minutes.toString() : "";
+      const prompt = defaultSampling ? `Sampling interval (minutes, >= 0, current: ${defaultSampling}): ` : "Sampling interval (minutes, >= 0): ";
+      const samplingInput = await ask(chalk.yellow(prompt));
+      if (!samplingInput.trim() && defaultSampling) {
+        samplingInterval = existingWindow.sampling_interval_minutes;
+        break;
+      }
+      samplingInterval = parseInteger(samplingInput, 0);
+      if (samplingInterval !== null) {
+        break;
+      }
+      console.log(chalk.red("❌ Invalid sampling interval. Please enter a number >= 0."));
+    }
+    
+    // Get enabled status (pre-fill if updating existing)
+    let enabled = existingWindow ? (existingWindow.enabled === 1) : true;
+    const defaultEnabled = existingWindow ? (existingWindow.enabled === 1 ? "y" : "n") : "y";
+    const enabledInput = await ask(chalk.yellow(`Enable this window? (y/n, current: ${defaultEnabled}): `));
+    if (enabledInput.trim()) {
+      const enabledBool = parseBoolean(enabledInput);
+      if (enabledBool !== null) {
+        enabled = enabledBool;
+      }
+    }
+    
+    windows.push({
+      windowNumber: windowCount + 1,
+      startTimeMinutes,
+      endTimeMinutes,
+      samplingIntervalMinutes: samplingInterval,
+      enabled
+    });
+    
+    windowCount++;
+    
+    // Show summary
+    const startHours = Math.floor(startTimeMinutes / 60);
+    const startMins = startTimeMinutes % 60;
+    const endHours = Math.floor(endTimeMinutes / 60);
+    const endMins = endTimeMinutes % 60;
+    console.log(chalk.green(`✅ Window ${windowCount} configured: ${String(startHours).padStart(2, '0')}:${String(startMins).padStart(2, '0')} - ${String(endHours).padStart(2, '0')}:${String(endMins).padStart(2, '0')} UTC, sampling: ${samplingInterval} min, enabled: ${enabled ? 'yes' : 'no'}`));
+  }
+  
+  if (windows.length === 0) {
+    console.log(chalk.yellow("⚠️  No windows configured. Returning empty value."));
+    return "";
+  }
+  
+  // Build hex value from windows (each window is 6 bytes)
+  // Format: start_time (2 bytes LE) + end_time (2 bytes LE) + sampling (2 bytes LE)
+  let hexValue = "";
+  for (let i = 0; i < 8; i++) {
+    if (i < windows.length && windows[i].enabled) {
+      const window = windows[i];
+      // Convert to little-endian hex (2 bytes each)
+      const startHex = numberToLittleEndianHex(window.startTimeMinutes, 2);
+      const endHex = numberToLittleEndianHex(window.endTimeMinutes, 2);
+      const samplingHex = numberToLittleEndianHex(window.samplingIntervalMinutes, 2);
+      hexValue += startHex + endHex + samplingHex;
+    } else {
+      // Empty window (all zeros)
+      hexValue += "000000000000";
+    }
+  }
+  
+  // Store windows data for later insertion (we'll need device_config_id)
+  // Store in a module-level variable
+  if (!global.transmissionWindowsData) {
+    global.transmissionWindowsData = {};
+  }
+  global.transmissionWindowsData.pending = windows;
+  
+  console.log(chalk.blue(`\n📦 Generated hex value: ${hexValue}`));
+  console.log(chalk.blue(`📏 Total length: ${hexValue.length / 2} bytes (${windows.length} window(s))`));
+  
+  return hexValue;
 }
 
 /**
@@ -990,12 +1194,42 @@ async function updatePendingConfig(config) {
   console.log(chalk.white(`   Current Value: ${config.config_value}`));
   console.log("");
   
+  // If this is a transmission windows config, show existing windows
+  if (config.config_code === tConst.CODE_C_SEND) {
+    const existingWindows = transmissionWindowsDB.getByDeviceConfigId(config.id);
+    if (existingWindows && existingWindows.length > 0) {
+      console.log(chalk.yellow.bold("Current Transmission Windows:"));
+      existingWindows.forEach((window) => {
+        const startHours = Math.floor(window.start_time_minutes / 60);
+        const startMins = window.start_time_minutes % 60;
+        const endHours = Math.floor(window.end_time_minutes / 60);
+        const endMins = window.end_time_minutes % 60;
+        const status = window.enabled ? chalk.green("enabled") : chalk.red("disabled");
+        console.log(chalk.white(`   Window ${window.window_number}: `) + 
+                   chalk.blue(`${String(startHours).padStart(2, '0')}:${String(startMins).padStart(2, '0')} - ${String(endHours).padStart(2, '0')}:${String(endMins).padStart(2, '0')} UTC`) +
+                   chalk.gray(` | Sampling: ${window.sampling_interval_minutes} min | `) + status);
+      });
+      console.log("");
+    } else {
+      console.log(chalk.gray("   No transmission windows configured yet."));
+      console.log("");
+    }
+  }
+  
   // Find the config option to get prompts
   const configOption = configOptions.find(opt => opt.code === config.config_code);
   
   if (configOption) {
     console.log(chalk.cyan(`\n=== ${configOption.name} ===`));
-    const newValueHex = await getConfigParameters(config.config_code);
+    
+    // If this is transmission windows, pass existing windows to the configuration function
+    let newValueHex;
+    if (config.config_code === tConst.CODE_C_SEND) {
+      const existingWindows = transmissionWindowsDB.getByDeviceConfigId(config.id);
+      newValueHex = await configureTransmissionWindows(existingWindows);
+    } else {
+      newValueHex = await getConfigParameters(config.config_code);
+    }
     
     if (!newValueHex || newValueHex.length === 0) {
       console.log(chalk.red("❌ No value provided. Cancelled."));
@@ -1013,8 +1247,36 @@ async function updatePendingConfig(config) {
       // Update in database
       deviceConfigsDB.update(config.id, newValueHex, newFrame);
       
+      // If this is a transmission windows config, also update the windows in transmission_windows table
+      if (config.config_code === tConst.CODE_C_SEND && global.transmissionWindowsData && global.transmissionWindowsData.pending) {
+        const windows = global.transmissionWindowsData.pending;
+        
+        // Delete existing windows for this config
+        transmissionWindowsDB.deleteByDeviceConfigId(config.id);
+        
+        // Insert new windows
+        for (const window of windows) {
+          transmissionWindowsDB.upsert({
+            deviceConfigId: config.id,
+            windowNumber: window.windowNumber,
+            startTimeMinutes: window.startTimeMinutes,
+            endTimeMinutes: window.endTimeMinutes,
+            samplingIntervalMinutes: window.samplingIntervalMinutes,
+            enabled: window.enabled
+          });
+        }
+        
+        // Clear the pending windows data
+        delete global.transmissionWindowsData.pending;
+        console.log(chalk.green(`   ${windows.length} transmission window(s) updated in database.`));
+      }
+      
       console.log(chalk.green("\n✅ Configuration updated successfully."));
     } else {
+      // Clear pending windows data if cancelled
+      if (global.transmissionWindowsData && global.transmissionWindowsData.pending) {
+        delete global.transmissionWindowsData.pending;
+      }
       console.log(chalk.yellow("⚠️  Cancelled."));
     }
   } else {
@@ -1166,16 +1428,39 @@ async function showConfigurationMenu() {
         const confirm = await ask(chalk.yellow("\n❓ Save this configuration to be sent when device connects? (y/n): "));
         if (confirm.toLowerCase() === "y" || confirm.toLowerCase() === "yes") {
           // Store in pending configurations
-          deviceConfigsDB.add(
+          const deviceConfigId = deviceConfigsDB.add(
             currentDeviceId,
             selectedConfig.name,
             selectedConfig.code,
             valueHex,
             frame
           );
+          
+          // If this is a transmission windows config, also insert the windows into transmission_windows table
+          if (selectedConfig.code === tConst.CODE_C_SEND && global.transmissionWindowsData && global.transmissionWindowsData.pending) {
+            const windows = global.transmissionWindowsData.pending;
+            for (const window of windows) {
+              transmissionWindowsDB.upsert({
+                deviceConfigId: deviceConfigId,
+                windowNumber: window.windowNumber,
+                startTimeMinutes: window.startTimeMinutes,
+                endTimeMinutes: window.endTimeMinutes,
+                samplingIntervalMinutes: window.samplingIntervalMinutes,
+                enabled: window.enabled
+              });
+            }
+            // Clear the pending windows data
+            delete global.transmissionWindowsData.pending;
+            console.log(chalk.green(`   ${windows.length} transmission window(s) saved to database.`));
+          }
+          
           console.log(chalk.green("\n✅ Configuration saved to database."));
           console.log(chalk.blue("   It will be sent when the device connects to the server."));
         } else {
+          // Clear pending windows data if cancelled
+          if (global.transmissionWindowsData && global.transmissionWindowsData.pending) {
+            delete global.transmissionWindowsData.pending;
+          }
           console.log(chalk.yellow("⚠️  Cancelled."));
         }
         
@@ -1199,28 +1484,48 @@ async function showConfigurationMenu() {
   return true; // Go back to IP selection
 }
 
+// Handle process termination signals for clean exit
+process.on('SIGINT', () => {
+  closeReadline();
+  closeDatabase();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  closeReadline();
+  closeDatabase();
+  process.exit(0);
+});
+
 // Main menu loop
 (async () => {
-  while (true) {
-    const rootResult = await showRootMenu();
-    
-    if (rootResult === false) {
-      // Exit
-      break;
-    } else if (rootResult === true) {
-      // Device selected, show configuration menu
-      const goBack = await showConfigurationMenu();
-      if (goBack === false) {
-        // Exit from configuration menu
+  try {
+    while (true) {
+      const rootResult = await showRootMenu();
+      
+      if (rootResult === false) {
+        // Exit
         break;
+      } else if (rootResult === true) {
+        // Device selected, show configuration menu
+        const goBack = await showConfigurationMenu();
+        if (goBack === false) {
+          // Exit from configuration menu
+          break;
+        }
+        // If goBack === true, loop back to root menu
       }
-      // If goBack === true, loop back to root menu
+      // If rootResult === null, loop again to show root menu
     }
-    // If rootResult === null, loop again to show root menu
+  } catch (error) {
+    console.error(chalk.red(`❌ Error: ${error.message}`));
+  } finally {
+    // Cleanup on exit
+    closeReadline();
+    closeDatabase();
+    console.log(chalk.cyan("👋 Goodbye!"));
+    // Explicitly exit the process to prevent hanging in GitLab CI
+    process.exit(0);
   }
-  
-  // Close database on exit
-  closeDatabase();
-  console.log(chalk.cyan("👋 Goodbye!"));
 })();
 

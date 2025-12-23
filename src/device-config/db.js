@@ -182,10 +182,11 @@ export const deviceConfigsDB = {
    */
   add(deviceId, configType, configCode, configValue, frameHex) {
     const db = getDatabase();
-    db.prepare(`
+    const result = db.prepare(`
       INSERT INTO device_configs (device_id, config_type, config_code, config_value, frame_hex, status)
       VALUES (?, ?, ?, ?, ?, 'pending')
     `).run(deviceId, configType, configCode, configValue, frameHex);
+    return result.lastInsertRowid;
   },
   
   /**
