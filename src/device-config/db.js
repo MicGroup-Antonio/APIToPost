@@ -81,6 +81,24 @@ function createTables() {
     )
   `);
   
+  // Table for storing reading window parameters (up to 8 windows per config)
+  // Each window: 6 bytes = start_time_minutes (2 bytes) + end_time_minutes (2 bytes) + sampling_interval_minutes (2 bytes)
+  // All times in minutes UTC, stored as little-endian 16-bit values
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS reading_windows (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_config_id INTEGER NOT NULL,
+      window_number INTEGER NOT NULL CHECK(window_number >= 1 AND window_number <= 8),
+      start_time_minutes INTEGER NOT NULL CHECK(start_time_minutes >= 0 AND start_time_minutes <= 1440),
+      end_time_minutes INTEGER NOT NULL CHECK(end_time_minutes >= 0 AND end_time_minutes <= 1440),
+      sampling_interval_minutes INTEGER NOT NULL CHECK(sampling_interval_minutes >= 0),
+      enabled INTEGER DEFAULT 1 CHECK(enabled IN (0, 1)),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (device_config_id) REFERENCES device_configs(id) ON DELETE CASCADE,
+      UNIQUE(device_config_id, window_number)
+    )
+  `);
+  
   // Create indexes for better performance
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_device_configs_device ON device_configs(device_id);
@@ -88,6 +106,8 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_device_configs_sent_at ON device_configs(sent_at);
     CREATE INDEX IF NOT EXISTS idx_transmission_windows_config ON transmission_windows(device_config_id);
     CREATE INDEX IF NOT EXISTS idx_transmission_windows_number ON transmission_windows(device_config_id, window_number);
+    CREATE INDEX IF NOT EXISTS idx_reading_windows_config ON reading_windows(device_config_id);
+    CREATE INDEX IF NOT EXISTS idx_reading_windows_number ON reading_windows(device_config_id, window_number);
   `);
 }
 
@@ -385,6 +405,108 @@ export const transmissionWindowsDB = {
     const db = getDatabase();
     const result = db.prepare(`
       SELECT COUNT(*) as count FROM transmission_windows 
+      WHERE device_config_id = ?
+    `).get(deviceConfigId);
+    return result.count;
+  }
+};
+
+// Reading windows operations
+export const readingWindowsDB = {
+  /**
+   * Add or update a reading window
+   * @param {Object} params - Window parameters
+   * @param {number} params.deviceConfigId - Device config ID
+   * @param {number} params.windowNumber - Window number (1-8)
+   * @param {number} params.startTimeMinutes - Start time in minutes UTC (0-1440)
+   * @param {number} params.endTimeMinutes - End time in minutes UTC (0-1440)
+   * @param {number} params.samplingIntervalMinutes - Sampling interval in minutes
+   * @param {boolean} params.enabled - Whether window is enabled (default: true)
+   */
+  upsert(params) {
+    const { deviceConfigId, windowNumber, startTimeMinutes, endTimeMinutes, samplingIntervalMinutes, enabled = true } = params;
+    const db = getDatabase();
+    const existing = db.prepare(`
+      SELECT id FROM reading_windows 
+      WHERE device_config_id = ? AND window_number = ?
+    `).get(deviceConfigId, windowNumber);
+    
+    if (existing) {
+      db.prepare(`
+        UPDATE reading_windows 
+        SET start_time_minutes = ?, end_time_minutes = ?, sampling_interval_minutes = ?, enabled = ?
+        WHERE id = ?
+      `).run(
+        startTimeMinutes, endTimeMinutes, samplingIntervalMinutes,
+        enabled ? 1 : 0,
+        existing.id
+      );
+      return existing.id;
+    } else {
+      const result = db.prepare(`
+        INSERT INTO reading_windows 
+        (device_config_id, window_number, start_time_minutes, end_time_minutes, sampling_interval_minutes, enabled)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        deviceConfigId, windowNumber, startTimeMinutes, endTimeMinutes, samplingIntervalMinutes,
+        enabled ? 1 : 0
+      );
+      return result.lastInsertRowid;
+    }
+  },
+  
+  /**
+   * Get all reading windows for a device config
+   */
+  getByDeviceConfigId(deviceConfigId) {
+    const db = getDatabase();
+    return db.prepare(`
+      SELECT * FROM reading_windows 
+      WHERE device_config_id = ?
+      ORDER BY window_number ASC
+    `).all(deviceConfigId);
+  },
+  
+  /**
+   * Get a specific reading window
+   */
+  getByWindowNumber(deviceConfigId, windowNumber) {
+    const db = getDatabase();
+    return db.prepare(`
+      SELECT * FROM reading_windows 
+      WHERE device_config_id = ? AND window_number = ?
+    `).get(deviceConfigId, windowNumber);
+  },
+  
+  /**
+   * Delete a reading window
+   */
+  delete(deviceConfigId, windowNumber) {
+    const db = getDatabase();
+    return db.prepare(`
+      DELETE FROM reading_windows 
+      WHERE device_config_id = ? AND window_number = ?
+    `).run(deviceConfigId, windowNumber);
+  },
+  
+  /**
+   * Delete all reading windows for a device config
+   */
+  deleteByDeviceConfigId(deviceConfigId) {
+    const db = getDatabase();
+    return db.prepare(`
+      DELETE FROM reading_windows 
+      WHERE device_config_id = ?
+    `).run(deviceConfigId);
+  },
+  
+  /**
+   * Get count of windows for a device config
+   */
+  getCount(deviceConfigId) {
+    const db = getDatabase();
+    const result = db.prepare(`
+      SELECT COUNT(*) as count FROM reading_windows 
       WHERE device_config_id = ?
     `).get(deviceConfigId);
     return result.count;

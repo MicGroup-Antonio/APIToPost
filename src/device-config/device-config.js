@@ -1,7 +1,10 @@
 import { calcularCRC, buildTrama } from "../tst.js";
 import * as tConst from "../const.js";
 import readline from "readline";
-import { initDatabase, closeDatabase, getDatabase, deviceDB, deviceConfigsDB, transmissionWindowsDB } from "./db.js";
+import { initDatabase, closeDatabase, getDatabase, deviceDB, deviceConfigsDB, transmissionWindowsDB, readingWindowsDB } from "./db.js";
+import { configureReadingWindows } from "./messages/reading-windows.js";
+import { configureTransmissionWindows } from "./messages/transmission-windows.js";
+import { formatMinutesForDisplay } from "./utils/time-parser.js";
 import chalk from "chalk";
 
 // Force color output for Git Bash and Windows terminals
@@ -58,9 +61,9 @@ let rl = null;
 function createReadline() {
   if (!rl) {
     rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout,
-    });
+    input: process.stdin,
+    output: process.stdout,
+  });
   }
   return rl;
 }
@@ -317,20 +320,10 @@ async function getConfigParameters(configCode) {
       return serverValue;
       
     case tConst.CODE_C_SEND:
-      return await configureTransmissionWindows();
+      return await configureTransmissionWindows(ask);
       
     case tConst.CODE_C_RECV:
-      console.log(chalk.cyan("\n=== Reading Windows ==="));
-      let recvValue;
-      while (true) {
-        const hexInput = await ask(chalk.yellow("Enter reading window configuration (hex): "));
-        if (isValidHex(hexInput)) {
-          recvValue = hexInput.trim().toLowerCase();
-          break;
-        }
-        console.log(chalk.red("❌ Invalid hex format. Please enter hexadecimal characters only (0-9, a-f)."));
-      }
-      return recvValue;
+      return await configureReadingWindows(ask);
       
     case tConst.CODE_C_DNS:
       console.log(chalk.cyan("\n=== DNS Configuration ==="));
@@ -481,204 +474,6 @@ async function getConfigParameters(configCode) {
 }
 
 /**
- * Configure transmission windows (up to 8 windows)
- * Returns the hex value for the configuration frame
- */
-/**
- * Configure transmission windows (up to 8 windows)
- * @param {Array} existingWindows - Optional array of existing windows to pre-fill
- * Returns the hex value for the configuration frame
- */
-async function configureTransmissionWindows(existingWindows = null) {
-  console.clear();
-  console.log(chalk.cyan("═══════════════════════════════════════════════════════"));
-  console.log(chalk.cyan.bold("         TRANSMISSION WINDOWS CONFIGURATION"));
-  console.log(chalk.cyan("═══════════════════════════════════════════════════════"));
-  console.log("");
-  console.log(chalk.yellow("You can configure up to 8 transmission windows."));
-  console.log(chalk.yellow("Each window requires:"));
-  console.log(chalk.white("  - Start time (minutes UTC, 0-1440, e.g., 720 = 12:00)"));
-  console.log(chalk.white("  - End time (minutes UTC, 0-1440, e.g., 780 = 13:00)"));
-  console.log(chalk.white("  - Sampling interval (minutes, e.g., 5)"));
-  console.log("");
-  
-  const windows = [];
-  let windowCount = 0;
-  
-  // If updating, show existing windows and allow editing
-  if (existingWindows && existingWindows.length > 0) {
-    console.log(chalk.yellow.bold("Existing Windows (you can modify or add more):"));
-    existingWindows.forEach((window) => {
-      const startHours = Math.floor(window.start_time_minutes / 60);
-      const startMins = window.start_time_minutes % 60;
-      const endHours = Math.floor(window.end_time_minutes / 60);
-      const endMins = window.end_time_minutes % 60;
-      const status = window.enabled === 1 ? chalk.green("enabled") : chalk.red("disabled");
-      console.log(chalk.white(`   Window ${window.window_number}: `) + 
-                 chalk.blue(`${String(startHours).padStart(2, '0')}:${String(startMins).padStart(2, '0')} - ${String(endHours).padStart(2, '0')}:${String(endMins).padStart(2, '0')} UTC`) +
-                 chalk.gray(` | Sampling: ${window.sampling_interval_minutes} min | `) + status);
-    });
-    console.log("");
-    
-    // Ask if user wants to keep existing windows or reconfigure
-    const keepExisting = await ask(chalk.yellow("Keep existing windows and add more? (y/n, default: n to reconfigure all): "));
-    const keepExistingBool = parseBoolean(keepExisting, false);
-    
-    if (keepExistingBool === true) {
-      // Keep existing windows, add more
-      existingWindows.forEach((window) => {
-        windows.push({
-          windowNumber: window.window_number,
-          startTimeMinutes: window.start_time_minutes,
-          endTimeMinutes: window.end_time_minutes,
-          samplingIntervalMinutes: window.sampling_interval_minutes,
-          enabled: window.enabled === 1
-        });
-        windowCount++;
-      });
-      console.log(chalk.green(`✅ Keeping ${existingWindows.length} existing window(s). You can add more.`));
-      console.log("");
-    }
-  }
-  
-  while (windowCount < 8) {
-    console.log(chalk.cyan(`\n--- Window ${windowCount + 1} ---`));
-    
-    // Check if this window already exists (when updating)
-    let existingWindow = null;
-    if (existingWindows && existingWindows.length > 0) {
-      existingWindow = existingWindows.find(w => w.window_number === windowCount + 1);
-    }
-    
-    // Ask if user wants to add/update another window
-    if (windowCount > 0 || (existingWindow && windows.length > 0)) {
-      const addMore = await ask(chalk.yellow(`Configure window ${windowCount + 1}? (y/n): `));
-      const addMoreBool = parseBoolean(addMore, false);
-      if (addMoreBool === false) {
-        break;
-      }
-    }
-    
-    // Get start time (pre-fill if updating existing)
-    let startTimeMinutes;
-    while (true) {
-      const defaultStart = existingWindow ? existingWindow.start_time_minutes.toString() : "";
-      const prompt = defaultStart ? `Start time (minutes UTC, 0-1440, current: ${defaultStart}): ` : "Start time (minutes UTC, 0-1440): ";
-      const startInput = await ask(chalk.yellow(prompt));
-      if (!startInput.trim() && defaultStart) {
-        startTimeMinutes = existingWindow.start_time_minutes;
-        break;
-      }
-      startTimeMinutes = parseInteger(startInput, 0, 1440);
-      if (startTimeMinutes !== null) {
-        break;
-      }
-      console.log(chalk.red("❌ Invalid start time. Please enter a number between 0 and 1440."));
-    }
-    
-    // Get end time (pre-fill if updating existing)
-    let endTimeMinutes;
-    while (true) {
-      const defaultEnd = existingWindow ? existingWindow.end_time_minutes.toString() : "";
-      const prompt = defaultEnd ? `End time (minutes UTC, 0-1440, current: ${defaultEnd}): ` : "End time (minutes UTC, 0-1440): ";
-      const endInput = await ask(chalk.yellow(prompt));
-      if (!endInput.trim() && defaultEnd) {
-        endTimeMinutes = existingWindow.end_time_minutes;
-        break;
-      }
-      endTimeMinutes = parseInteger(endInput, 0, 1440);
-      if (endTimeMinutes !== null && endTimeMinutes > startTimeMinutes) {
-        break;
-      }
-      if (endTimeMinutes !== null && endTimeMinutes <= startTimeMinutes) {
-        console.log(chalk.red("❌ End time must be greater than start time."));
-      } else {
-        console.log(chalk.red("❌ Invalid end time. Please enter a number between 0 and 1440."));
-      }
-    }
-    
-    // Get sampling interval (pre-fill if updating existing)
-    let samplingInterval;
-    while (true) {
-      const defaultSampling = existingWindow ? existingWindow.sampling_interval_minutes.toString() : "";
-      const prompt = defaultSampling ? `Sampling interval (minutes, >= 0, current: ${defaultSampling}): ` : "Sampling interval (minutes, >= 0): ";
-      const samplingInput = await ask(chalk.yellow(prompt));
-      if (!samplingInput.trim() && defaultSampling) {
-        samplingInterval = existingWindow.sampling_interval_minutes;
-        break;
-      }
-      samplingInterval = parseInteger(samplingInput, 0);
-      if (samplingInterval !== null) {
-        break;
-      }
-      console.log(chalk.red("❌ Invalid sampling interval. Please enter a number >= 0."));
-    }
-    
-    // Get enabled status (pre-fill if updating existing)
-    let enabled = existingWindow ? (existingWindow.enabled === 1) : true;
-    const defaultEnabled = existingWindow ? (existingWindow.enabled === 1 ? "y" : "n") : "y";
-    const enabledInput = await ask(chalk.yellow(`Enable this window? (y/n, current: ${defaultEnabled}): `));
-    if (enabledInput.trim()) {
-      const enabledBool = parseBoolean(enabledInput);
-      if (enabledBool !== null) {
-        enabled = enabledBool;
-      }
-    }
-    
-    windows.push({
-      windowNumber: windowCount + 1,
-      startTimeMinutes,
-      endTimeMinutes,
-      samplingIntervalMinutes: samplingInterval,
-      enabled
-    });
-    
-    windowCount++;
-    
-    // Show summary
-    const startHours = Math.floor(startTimeMinutes / 60);
-    const startMins = startTimeMinutes % 60;
-    const endHours = Math.floor(endTimeMinutes / 60);
-    const endMins = endTimeMinutes % 60;
-    console.log(chalk.green(`✅ Window ${windowCount} configured: ${String(startHours).padStart(2, '0')}:${String(startMins).padStart(2, '0')} - ${String(endHours).padStart(2, '0')}:${String(endMins).padStart(2, '0')} UTC, sampling: ${samplingInterval} min, enabled: ${enabled ? 'yes' : 'no'}`));
-  }
-  
-  if (windows.length === 0) {
-    console.log(chalk.yellow("⚠️  No windows configured. Returning empty value."));
-    return "";
-  }
-  
-  // Build hex value from windows (each window is 6 bytes)
-  // Format: start_time (2 bytes LE) + end_time (2 bytes LE) + sampling (2 bytes LE)
-  let hexValue = "";
-  for (let i = 0; i < 8; i++) {
-    if (i < windows.length && windows[i].enabled) {
-      const window = windows[i];
-      // Convert to little-endian hex (2 bytes each)
-      const startHex = numberToLittleEndianHex(window.startTimeMinutes, 2);
-      const endHex = numberToLittleEndianHex(window.endTimeMinutes, 2);
-      const samplingHex = numberToLittleEndianHex(window.samplingIntervalMinutes, 2);
-      hexValue += startHex + endHex + samplingHex;
-    } else {
-      // Empty window (all zeros)
-      hexValue += "000000000000";
-    }
-  }
-  
-  // Store windows data for later insertion (we'll need device_config_id)
-  // Store in a module-level variable
-  if (!global.transmissionWindowsData) {
-    global.transmissionWindowsData = {};
-  }
-  global.transmissionWindowsData.pending = windows;
-  
-  console.log(chalk.blue(`\n📦 Generated hex value: ${hexValue}`));
-  console.log(chalk.blue(`📏 Total length: ${hexValue.length / 2} bytes (${windows.length} window(s))`));
-  
-  return hexValue;
-}
-
-/**
  * Root menu: Main device selection options
  */
 async function showRootMenu() {
@@ -783,7 +578,7 @@ async function chooseDeviceFromList() {
     console.log(chalk.green(`✅ Selected: ${selectedDevice.name}`));
     await ask("Press Enter to continue...");
     return true; // Valid selection, proceed to config menu
-  } else {
+        } else {
     console.log(chalk.red("❌ Invalid option."));
     await ask("Press Enter to continue...");
     return null; // Invalid, back to root menu
@@ -1135,11 +930,260 @@ async function managePendingConfig(pendingConfigs) {
 }
 
 /**
+ * Parse configuration value and return human-readable parameters
+ * @param {string} configCode - Configuration code
+ * @param {string} configValue - Hex value string
+ * @param {number} configId - Configuration ID (for database lookups)
+ * @returns {Object} Parsed parameters object
+ */
+function parseConfigParameters(configCode, configValue, configId) {
+  const params = {
+    type: configCode,
+    raw: configValue,
+    parsed: {}
+  };
+
+  try {
+    switch (configCode) {
+      case tConst.CODE_C_SEND:
+        // Transmission Windows - get from database
+        const transmissionWindows = transmissionWindowsDB.getByDeviceConfigId(configId);
+        if (transmissionWindows && transmissionWindows.length > 0) {
+          params.parsed.windows = transmissionWindows.map(w => ({
+            number: w.window_number,
+            startTime: formatMinutesForDisplay(w.start_time_minutes),
+            endTime: formatMinutesForDisplay(w.end_time_minutes),
+            samplingInterval: w.sampling_interval_minutes,
+            enabled: w.enabled === 1
+          }));
+        }
+        break;
+
+      case tConst.CODE_C_RECV:
+        // Reading Windows - get from database
+        const readingWindows = readingWindowsDB.getByDeviceConfigId(configId);
+        if (readingWindows && readingWindows.length > 0) {
+          params.parsed.windows = readingWindows.map(w => ({
+            number: w.window_number,
+            startTime: formatMinutesForDisplay(w.start_time_minutes),
+            endTime: formatMinutesForDisplay(w.end_time_minutes),
+            samplingInterval: w.sampling_interval_minutes,
+            enabled: w.enabled === 1
+          }));
+        }
+        break;
+
+      case tConst.CODE_C_SERV:
+        // Server Parameters: host (64 bytes) + port (2 bytes LE)
+        if (configValue.length >= 132) { // 64*2 + 2*2 = 132 hex chars
+          const hostHex = configValue.substring(0, 128); // 64 bytes = 128 hex chars
+          const portHex = configValue.substring(128, 132); // 2 bytes = 4 hex chars
+          
+          // Convert hex to string (remove null bytes)
+          let host = "";
+          for (let i = 0; i < 128; i += 2) {
+            const byte = parseInt(hostHex.substring(i, i + 2), 16);
+            if (byte === 0) break;
+            host += String.fromCharCode(byte);
+          }
+          
+          // Convert port from little-endian
+          const port = parseInt(portHex.substring(2, 4) + portHex.substring(0, 2), 16);
+          
+          params.parsed.host = host;
+          params.parsed.port = port;
+        }
+        break;
+
+      case tConst.CODE_C_AUTH:
+        // Authorization: username (32 bytes) + password (32 bytes)
+        if (configValue.length >= 128) { // 32*2 + 32*2 = 128 hex chars
+          const userHex = configValue.substring(0, 64); // 32 bytes = 64 hex chars
+          const passHex = configValue.substring(64, 128); // 32 bytes = 64 hex chars
+          
+          // Convert hex to string (remove null bytes)
+          let username = "";
+          for (let i = 0; i < 64; i += 2) {
+            const byte = parseInt(userHex.substring(i, i + 2), 16);
+            if (byte === 0) break;
+            username += String.fromCharCode(byte);
+          }
+          
+          let password = "";
+          for (let i = 0; i < 64; i += 2) {
+            const byte = parseInt(passHex.substring(i, i + 2), 16);
+            if (byte === 0) break;
+            password += String.fromCharCode(byte);
+          }
+          
+          params.parsed.username = username;
+          params.parsed.password = password ? "***" : ""; // Hide password
+        }
+        break;
+
+      case tConst.CODE_C_MAGN:
+        // Magnet: "01" = enabled, "00" = disabled
+        params.parsed.enabled = configValue === "01";
+        break;
+
+      case tConst.CODE_C_NTP:
+        // NTP Server: server address (64 bytes)
+        if (configValue.length >= 128) { // 64 bytes = 128 hex chars
+          let server = "";
+          for (let i = 0; i < 128; i += 2) {
+            const byte = parseInt(configValue.substring(i, i + 2), 16);
+            if (byte === 0) break;
+            server += String.fromCharCode(byte);
+          }
+          params.parsed.server = server;
+        }
+        break;
+
+      case tConst.CODE_C_TMAX:
+        // Max Connection Time: seconds (4 bytes LE)
+        if (configValue.length >= 8) {
+          const seconds = parseInt(
+            configValue.substring(6, 8) + configValue.substring(4, 6) + 
+            configValue.substring(2, 4) + configValue.substring(0, 2), 
+            16
+          );
+          params.parsed.seconds = seconds;
+          params.parsed.formatted = `${seconds} seconds (${Math.floor(seconds / 60)} min ${seconds % 60} sec)`;
+        }
+        break;
+
+      case tConst.CODE_C_TTMAX:
+        // Temporary Max Connection Time: seconds (4 bytes LE)
+        if (configValue.length >= 8) {
+          const seconds = parseInt(
+            configValue.substring(6, 8) + configValue.substring(4, 6) + 
+            configValue.substring(2, 4) + configValue.substring(0, 2), 
+            16
+          );
+          params.parsed.seconds = seconds;
+          params.parsed.formatted = `${seconds} seconds (${Math.floor(seconds / 60)} min ${seconds % 60} sec)`;
+        }
+        break;
+
+      case tConst.CODE_C_WMBUS:
+        // WMBUS Reading Time: seconds (4 bytes LE)
+        if (configValue.length >= 8) {
+          const seconds = parseInt(
+            configValue.substring(6, 8) + configValue.substring(4, 6) + 
+            configValue.substring(2, 4) + configValue.substring(0, 2), 
+            16
+          );
+          params.parsed.seconds = seconds;
+          params.parsed.formatted = `${seconds} seconds (${Math.floor(seconds / 60)} min ${seconds % 60} sec)`;
+        }
+        break;
+
+      default:
+        // For other types, just show hex value
+        params.parsed.hex = configValue;
+        break;
+    }
+  } catch (error) {
+    // If parsing fails, just show raw value
+    params.parsed.error = "Failed to parse parameters";
+    params.parsed.hex = configValue;
+  }
+
+  return params;
+}
+
+/**
+ * Display parsed configuration parameters in a human-readable format
+ * @param {Object} params - Parsed parameters from parseConfigParameters
+ */
+function displayConfigParameters(params) {
+  console.log(chalk.yellow.bold("Configuration Parameters:"));
+  
+  if (Object.keys(params.parsed).length === 0) {
+    console.log(chalk.gray("   No parameters to display"));
+    return;
+  }
+
+  switch (params.type) {
+    case tConst.CODE_C_SEND:
+      if (params.parsed.windows && params.parsed.windows.length > 0) {
+        params.parsed.windows.forEach((window) => {
+          const status = window.enabled ? chalk.green("enabled") : chalk.red("disabled");
+          console.log(chalk.white(`   Window ${window.number}: `) + 
+                     chalk.blue(`${window.startTime} - ${window.endTime} UTC`) +
+                     chalk.gray(` | Sampling: ${window.samplingInterval} min | `) + status);
+        });
+      } else {
+        console.log(chalk.gray("   No transmission windows configured"));
+      }
+      break;
+
+    case tConst.CODE_C_RECV:
+      if (params.parsed.windows && params.parsed.windows.length > 0) {
+        params.parsed.windows.forEach((window) => {
+          const status = window.enabled ? chalk.green("enabled") : chalk.red("disabled");
+          console.log(chalk.white(`   Window ${window.number}: `) + 
+                     chalk.blue(`${window.startTime} - ${window.endTime} UTC`) +
+                     chalk.gray(` | Sampling: ${window.samplingInterval} min | `) + status);
+        });
+      } else {
+        console.log(chalk.gray("   No reading windows configured"));
+      }
+      break;
+
+    case tConst.CODE_C_SERV:
+      if (params.parsed.host) {
+        console.log(chalk.white(`   Server Host: `) + chalk.blue(params.parsed.host));
+      }
+      if (params.parsed.port !== undefined) {
+        console.log(chalk.white(`   Server Port: `) + chalk.blue(params.parsed.port));
+      }
+      break;
+
+    case tConst.CODE_C_AUTH:
+      if (params.parsed.username) {
+        console.log(chalk.white(`   Username: `) + chalk.blue(params.parsed.username));
+      }
+      if (params.parsed.password !== undefined) {
+        console.log(chalk.white(`   Password: `) + chalk.gray(params.parsed.password || "(empty)"));
+      }
+      break;
+
+    case tConst.CODE_C_MAGN:
+      const magnStatus = params.parsed.enabled ? chalk.green("Enabled") : chalk.red("Disabled");
+      console.log(chalk.white(`   Magnet: `) + magnStatus);
+      break;
+
+    case tConst.CODE_C_NTP:
+      if (params.parsed.server) {
+        console.log(chalk.white(`   NTP Server: `) + chalk.blue(params.parsed.server));
+      }
+      break;
+
+    case tConst.CODE_C_TMAX:
+    case tConst.CODE_C_TTMAX:
+    case tConst.CODE_C_WMBUS:
+      if (params.parsed.formatted) {
+        console.log(chalk.white(`   Time: `) + chalk.blue(params.parsed.formatted));
+      } else if (params.parsed.seconds !== undefined) {
+        console.log(chalk.white(`   Seconds: `) + chalk.blue(params.parsed.seconds));
+      }
+      break;
+
+    default:
+      if (params.parsed.hex) {
+        console.log(chalk.white(`   Hex Value: `) + chalk.gray(params.parsed.hex.substring(0, 80) + (params.parsed.hex.length > 80 ? '...' : '')));
+      }
+      break;
+  }
+}
+
+/**
  * Manage pending configuration details (update/delete)
  */
 async function managePendingConfigDetails(config) {
   let option = "";
-  
+
   while (option !== "0") {
     console.clear();
     console.log(chalk.cyan("═══════════════════════════════════════════════════════"));
@@ -1152,8 +1196,16 @@ async function managePendingConfigDetails(config) {
     console.log(chalk.white(`   Code: `) + chalk.blue(config.config_code));
     console.log(chalk.white(`   Status: `) + chalk.yellow(config.status));
     console.log(chalk.white(`   Created: `) + chalk.gray(config.created_at));
-    console.log(chalk.white(`   Value: `) + chalk.gray(config.config_value));
-    console.log(chalk.white(`   Frame: `) + chalk.gray(config.frame_hex.substring(0, 80) + (config.frame_hex.length > 80 ? '...' : '')));
+    console.log("");
+    
+    // Parse and display configuration parameters
+    const parsedParams = parseConfigParameters(config.config_code, config.config_value, config.id);
+    displayConfigParameters(parsedParams);
+    console.log("");
+    
+    console.log(chalk.yellow.bold("Raw Data:"));
+    console.log(chalk.white(`   Value (hex): `) + chalk.gray(config.config_value.substring(0, 80) + (config.config_value.length > 80 ? '...' : '')));
+    console.log(chalk.white(`   Frame (hex): `) + chalk.gray(config.frame_hex.substring(0, 80) + (config.frame_hex.length > 80 ? '...' : '')));
     console.log("");
     
     console.log(chalk.yellow.bold("Actions:"));
@@ -1200,18 +1252,36 @@ async function updatePendingConfig(config) {
     if (existingWindows && existingWindows.length > 0) {
       console.log(chalk.yellow.bold("Current Transmission Windows:"));
       existingWindows.forEach((window) => {
-        const startHours = Math.floor(window.start_time_minutes / 60);
-        const startMins = window.start_time_minutes % 60;
-        const endHours = Math.floor(window.end_time_minutes / 60);
-        const endMins = window.end_time_minutes % 60;
-        const status = window.enabled ? chalk.green("enabled") : chalk.red("disabled");
+        const startTime = formatMinutesForDisplay(window.start_time_minutes);
+        const endTime = formatMinutesForDisplay(window.end_time_minutes);
+        const status = window.enabled === 1 ? chalk.green("enabled") : chalk.red("disabled");
         console.log(chalk.white(`   Window ${window.window_number}: `) + 
-                   chalk.blue(`${String(startHours).padStart(2, '0')}:${String(startMins).padStart(2, '0')} - ${String(endHours).padStart(2, '0')}:${String(endMins).padStart(2, '0')} UTC`) +
+                   chalk.blue(`${startTime} - ${endTime} UTC`) +
                    chalk.gray(` | Sampling: ${window.sampling_interval_minutes} min | `) + status);
       });
       console.log("");
     } else {
       console.log(chalk.gray("   No transmission windows configured yet."));
+      console.log("");
+    }
+  }
+  
+  // If this is a reading windows config, show existing windows
+  if (config.config_code === tConst.CODE_C_RECV) {
+    const existingWindows = readingWindowsDB.getByDeviceConfigId(config.id);
+    if (existingWindows && existingWindows.length > 0) {
+      console.log(chalk.yellow.bold("Current Reading Windows:"));
+      existingWindows.forEach((window) => {
+        const startTime = formatMinutesForDisplay(window.start_time_minutes);
+        const endTime = formatMinutesForDisplay(window.end_time_minutes);
+        const status = window.enabled === 1 ? chalk.green("enabled") : chalk.red("disabled");
+        console.log(chalk.white(`   Window ${window.window_number}: `) + 
+                   chalk.blue(`${startTime} - ${endTime} UTC`) +
+                   chalk.gray(` | Sampling: ${window.sampling_interval_minutes} min | `) + status);
+      });
+      console.log("");
+    } else {
+      console.log(chalk.gray("   No reading windows configured yet."));
       console.log("");
     }
   }
@@ -1222,11 +1292,14 @@ async function updatePendingConfig(config) {
   if (configOption) {
     console.log(chalk.cyan(`\n=== ${configOption.name} ===`));
     
-    // If this is transmission windows, pass existing windows to the configuration function
+    // If this is transmission windows or reading windows, pass existing windows to the configuration function
     let newValueHex;
     if (config.config_code === tConst.CODE_C_SEND) {
       const existingWindows = transmissionWindowsDB.getByDeviceConfigId(config.id);
-      newValueHex = await configureTransmissionWindows(existingWindows);
+      newValueHex = await configureTransmissionWindows(ask, existingWindows);
+    } else if (config.config_code === tConst.CODE_C_RECV) {
+      const existingWindows = readingWindowsDB.getByDeviceConfigId(config.id);
+      newValueHex = await configureReadingWindows(ask, existingWindows);
     } else {
       newValueHex = await getConfigParameters(config.config_code);
     }
@@ -1269,6 +1342,30 @@ async function updatePendingConfig(config) {
         // Clear the pending windows data
         delete global.transmissionWindowsData.pending;
         console.log(chalk.green(`   ${windows.length} transmission window(s) updated in database.`));
+      }
+      
+      // If this is a reading windows config, also update the windows in reading_windows table
+      if (config.config_code === tConst.CODE_C_RECV && global.readingWindowsData && global.readingWindowsData.pending) {
+        const windows = global.readingWindowsData.pending;
+        
+        // Delete existing windows for this config
+        readingWindowsDB.deleteByDeviceConfigId(config.id);
+        
+        // Insert new windows
+        for (const window of windows) {
+          readingWindowsDB.upsert({
+            deviceConfigId: config.id,
+            windowNumber: window.windowNumber,
+            startTimeMinutes: window.startTimeMinutes,
+            endTimeMinutes: window.endTimeMinutes,
+            samplingIntervalMinutes: window.samplingIntervalMinutes,
+            enabled: window.enabled
+          });
+        }
+        
+        // Clear the pending windows data
+        delete global.readingWindowsData.pending;
+        console.log(chalk.green(`   ${windows.length} reading window(s) updated in database.`));
       }
       
       console.log(chalk.green("\n✅ Configuration updated successfully."));
@@ -1454,12 +1551,33 @@ async function showConfigurationMenu() {
             console.log(chalk.green(`   ${windows.length} transmission window(s) saved to database.`));
           }
           
+          // If this is a reading windows config, also insert the windows into reading_windows table
+          if (selectedConfig.code === tConst.CODE_C_RECV && global.readingWindowsData && global.readingWindowsData.pending) {
+            const windows = global.readingWindowsData.pending;
+            for (const window of windows) {
+              readingWindowsDB.upsert({
+                deviceConfigId: deviceConfigId,
+                windowNumber: window.windowNumber,
+                startTimeMinutes: window.startTimeMinutes,
+                endTimeMinutes: window.endTimeMinutes,
+                samplingIntervalMinutes: window.samplingIntervalMinutes,
+                enabled: window.enabled
+              });
+            }
+            // Clear the pending windows data
+            delete global.readingWindowsData.pending;
+            console.log(chalk.green(`   ${windows.length} reading window(s) saved to database.`));
+          }
+          
           console.log(chalk.green("\n✅ Configuration saved to database."));
           console.log(chalk.blue("   It will be sent when the device connects to the server."));
         } else {
           // Clear pending windows data if cancelled
           if (global.transmissionWindowsData && global.transmissionWindowsData.pending) {
             delete global.transmissionWindowsData.pending;
+          }
+          if (global.readingWindowsData && global.readingWindowsData.pending) {
+            delete global.readingWindowsData.pending;
           }
           console.log(chalk.yellow("⚠️  Cancelled."));
         }
