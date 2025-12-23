@@ -1,9 +1,10 @@
 import { calcularCRC, buildTrama } from "../tst.js";
 import * as tConst from "../const.js";
 import readline from "readline";
-import { initDatabase, closeDatabase, getDatabase, deviceDB, deviceConfigsDB, transmissionWindowsDB, readingWindowsDB } from "./db.js";
+import { initDatabase, closeDatabase, getDatabase, deviceDB, deviceConfigsDB, transmissionWindowsDB, readingWindowsDB, authorizationParametersDB } from "./db.js";
 import { configureReadingWindows } from "./messages/reading-windows.js";
 import { configureTransmissionWindows } from "./messages/transmission-windows.js";
+import { configureAuthorization } from "./messages/authorization.js";
 import { formatMinutesForDisplay } from "./utils/time-parser.js";
 import chalk from "chalk";
 
@@ -339,11 +340,7 @@ async function getConfigParameters(configCode) {
       return dnsValue;
       
     case tConst.CODE_C_AUTH:
-      console.log(chalk.cyan("\n=== Authorization Parameters ==="));
-      const authUser = await ask(chalk.yellow("Username: "));
-      const authPass = await ask(chalk.yellow("Password: "));
-      const authValue = stringToHexPadded(authUser, 32) + stringToHexPadded(authPass, 32);
-      return authValue;
+      return await configureAuthorization(ask);
       
     case tConst.CODE_C_MAGN:
       console.log(chalk.cyan("\n=== Magnet Activation ==="));
@@ -996,28 +993,11 @@ function parseConfigParameters(configCode, configValue, configId) {
         break;
 
       case tConst.CODE_C_AUTH:
-        // Authorization: username (32 bytes) + password (32 bytes)
-        if (configValue.length >= 128) { // 32*2 + 32*2 = 128 hex chars
-          const userHex = configValue.substring(0, 64); // 32 bytes = 64 hex chars
-          const passHex = configValue.substring(64, 128); // 32 bytes = 64 hex chars
-          
-          // Convert hex to string (remove null bytes)
-          let username = "";
-          for (let i = 0; i < 64; i += 2) {
-            const byte = parseInt(userHex.substring(i, i + 2), 16);
-            if (byte === 0) break;
-            username += String.fromCharCode(byte);
-          }
-          
-          let password = "";
-          for (let i = 0; i < 64; i += 2) {
-            const byte = parseInt(passHex.substring(i, i + 2), 16);
-            if (byte === 0) break;
-            password += String.fromCharCode(byte);
-          }
-          
-          params.parsed.username = username;
-          params.parsed.password = password ? "***" : ""; // Hide password
+        // Authorization: get from database
+        const authParams = authorizationParametersDB.getByDeviceConfigId(configId);
+        if (authParams) {
+          params.parsed.username = authParams.username;
+          params.parsed.password = authParams.password ? "***" : ""; // Hide password
         }
         break;
 
@@ -1286,13 +1266,27 @@ async function updatePendingConfig(config) {
     }
   }
   
+  // If this is an authorization config, show existing parameters
+  if (config.config_code === tConst.CODE_C_AUTH) {
+    const existingParams = authorizationParametersDB.getByDeviceConfigId(config.id);
+    if (existingParams) {
+      console.log(chalk.yellow.bold("Current Authorization Parameters:"));
+      console.log(chalk.white(`   Username: `) + chalk.blue(existingParams.username || "(empty)"));
+      console.log(chalk.white(`   Password: `) + chalk.gray(existingParams.password ? "***" : "(empty)"));
+      console.log("");
+    } else {
+      console.log(chalk.gray("   No authorization parameters configured yet."));
+      console.log("");
+    }
+  }
+  
   // Find the config option to get prompts
   const configOption = configOptions.find(opt => opt.code === config.config_code);
   
   if (configOption) {
     console.log(chalk.cyan(`\n=== ${configOption.name} ===`));
     
-    // If this is transmission windows or reading windows, pass existing windows to the configuration function
+    // If this is transmission windows, reading windows, or authorization, pass existing data to the configuration function
     let newValueHex;
     if (config.config_code === tConst.CODE_C_SEND) {
       const existingWindows = transmissionWindowsDB.getByDeviceConfigId(config.id);
@@ -1300,6 +1294,9 @@ async function updatePendingConfig(config) {
     } else if (config.config_code === tConst.CODE_C_RECV) {
       const existingWindows = readingWindowsDB.getByDeviceConfigId(config.id);
       newValueHex = await configureReadingWindows(ask, existingWindows);
+    } else if (config.config_code === tConst.CODE_C_AUTH) {
+      const existingParams = authorizationParametersDB.getByDeviceConfigId(config.id);
+      newValueHex = await configureAuthorization(ask, existingParams);
     } else {
       newValueHex = await getConfigParameters(config.config_code);
     }
@@ -1366,6 +1363,22 @@ async function updatePendingConfig(config) {
         // Clear the pending windows data
         delete global.readingWindowsData.pending;
         console.log(chalk.green(`   ${windows.length} reading window(s) updated in database.`));
+      }
+      
+      // If this is an authorization config, also update the authorization parameters in authorization_parameters table
+      if (config.config_code === tConst.CODE_C_AUTH && global.authorizationData && global.authorizationData.pending) {
+        const authParams = global.authorizationData.pending;
+        
+        // Update authorization parameters
+        authorizationParametersDB.upsert({
+          deviceConfigId: config.id,
+          username: authParams.username,
+          password: authParams.password
+        });
+        
+        // Clear the pending authorization data
+        delete global.authorizationData.pending;
+        console.log(chalk.green(`   Authorization parameters updated in database.`));
       }
       
       console.log(chalk.green("\n✅ Configuration updated successfully."));
@@ -1569,15 +1582,31 @@ async function showConfigurationMenu() {
             console.log(chalk.green(`   ${windows.length} reading window(s) saved to database.`));
           }
           
+          // If this is an authorization config, also insert the authorization parameters into authorization_parameters table
+          if (selectedConfig.code === tConst.CODE_C_AUTH && global.authorizationData && global.authorizationData.pending) {
+            const authParams = global.authorizationData.pending;
+            authorizationParametersDB.upsert({
+              deviceConfigId: deviceConfigId,
+              username: authParams.username,
+              password: authParams.password
+            });
+            // Clear the pending authorization data
+            delete global.authorizationData.pending;
+            console.log(chalk.green(`   Authorization parameters saved to database.`));
+          }
+          
           console.log(chalk.green("\n✅ Configuration saved to database."));
           console.log(chalk.blue("   It will be sent when the device connects to the server."));
         } else {
-          // Clear pending windows data if cancelled
+          // Clear pending data if cancelled
           if (global.transmissionWindowsData && global.transmissionWindowsData.pending) {
             delete global.transmissionWindowsData.pending;
           }
           if (global.readingWindowsData && global.readingWindowsData.pending) {
             delete global.readingWindowsData.pending;
+          }
+          if (global.authorizationData && global.authorizationData.pending) {
+            delete global.authorizationData.pending;
           }
           console.log(chalk.yellow("⚠️  Cancelled."));
         }

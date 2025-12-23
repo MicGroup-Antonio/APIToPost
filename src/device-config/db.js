@@ -99,6 +99,20 @@ function createTables() {
     )
   `);
   
+  // Table for storing authorization parameters (username and password)
+  // Format: username (32 bytes) + password (32 bytes) = 64 bytes total
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS authorization_parameters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_config_id INTEGER NOT NULL,
+      username TEXT NOT NULL,
+      password TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (device_config_id) REFERENCES device_configs(id) ON DELETE CASCADE,
+      UNIQUE(device_config_id)
+    )
+  `);
+  
   // Create indexes for better performance
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_device_configs_device ON device_configs(device_id);
@@ -108,6 +122,7 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_transmission_windows_number ON transmission_windows(device_config_id, window_number);
     CREATE INDEX IF NOT EXISTS idx_reading_windows_config ON reading_windows(device_config_id);
     CREATE INDEX IF NOT EXISTS idx_reading_windows_number ON reading_windows(device_config_id, window_number);
+    CREATE INDEX IF NOT EXISTS idx_authorization_parameters_config ON authorization_parameters(device_config_id);
   `);
 }
 
@@ -510,6 +525,63 @@ export const readingWindowsDB = {
       WHERE device_config_id = ?
     `).get(deviceConfigId);
     return result.count;
+  }
+};
+
+// Authorization parameters operations
+export const authorizationParametersDB = {
+  /**
+   * Add or update authorization parameters for a device config
+   * @param {Object} params - Authorization parameters
+   * @param {number} params.deviceConfigId - Device config ID
+   * @param {string} params.username - Username (max 32 chars)
+   * @param {string} params.password - Password (max 32 chars)
+   */
+  upsert(params) {
+    const { deviceConfigId, username, password } = params;
+    const db = getDatabase();
+    const existing = db.prepare(`
+      SELECT id FROM authorization_parameters 
+      WHERE device_config_id = ?
+    `).get(deviceConfigId);
+    
+    if (existing) {
+      db.prepare(`
+        UPDATE authorization_parameters 
+        SET username = ?, password = ?
+        WHERE id = ?
+      `).run(username || "", password || "", existing.id);
+      return existing.id;
+    } else {
+      const result = db.prepare(`
+        INSERT INTO authorization_parameters 
+        (device_config_id, username, password)
+        VALUES (?, ?, ?)
+      `).run(deviceConfigId, username || "", password || "");
+      return result.lastInsertRowid;
+    }
+  },
+  
+  /**
+   * Get authorization parameters for a device config
+   */
+  getByDeviceConfigId(deviceConfigId) {
+    const db = getDatabase();
+    return db.prepare(`
+      SELECT * FROM authorization_parameters 
+      WHERE device_config_id = ?
+    `).get(deviceConfigId);
+  },
+  
+  /**
+   * Delete authorization parameters for a device config
+   */
+  deleteByDeviceConfigId(deviceConfigId) {
+    const db = getDatabase();
+    return db.prepare(`
+      DELETE FROM authorization_parameters 
+      WHERE device_config_id = ?
+    `).run(deviceConfigId);
   }
 };
 
