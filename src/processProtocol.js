@@ -787,7 +787,7 @@ async function processTstProtocol(message) {
   logger(separacion);
 
   let respuesta = "";
-  let logEntry = "Received - " + message;
+  let logEntry = "Received - " + (Buffer.isBuffer(message) ? message.toString("hex") : String(message));
   logger(logEntry);
   //Dividimos la trama en su modo más genérico
   const parseResult = parseTrama(message.toString("hex"));
