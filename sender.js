@@ -493,33 +493,42 @@ let hex = hexOpciones["auth"].toLowerCase();
                   console.log(`   ❌ CRC inválido (esperado: ${expectedCrc}, recibido: ${trama.crc})`);
                 }
                 
-                // Send ACK for the configuration
-                const ackHex = buildACKFrame(trama);
-                const ackBuffer = Buffer.from(ackHex, "hex");
-                client.send(ackBuffer, rinfo.port, rinfo.address, (err) => {
-                  if (err) {
-                    console.error(`   ❌ Error enviando ACK: ${err.message}`);
-                  } else {
-                    console.log(`   ✅ ACK enviado para configuración #${configCount}`);
-                  }
-                });
-                
-                // Update device state frame ID
+                // Update device state with received config frame ID and session
                 deviceState.frameId = trama.idFrame;
+                deviceState.sessionH = trama.idSessionH;
+                deviceState.sessionL = trama.idSessionL;
+                
+                // Increment frame ID for ASK response
                 if (!outOfOrderTestingMode) {
                   incrementFrameId();
                 }
                 
-                // Reset timeout for next config
+                // Send ASK instead of ACK to request next configuration
+                console.log(`\n📤 Enviando ASK para solicitar siguiente configuración...`);
+                const askHex = hexOpciones["ask"].toLowerCase();
+                const askFrame = modificarTrama(askHex);
+                const askBuffer = Buffer.from(askFrame, "hex");
+                client.send(askBuffer, rinfo.port, rinfo.address, (err) => {
+                  if (err) {
+                    console.error(`   ❌ Error enviando ASK: ${err.message}`);
+                  } else {
+                    console.log(`   ✅ ASK enviado para solicitar siguiente configuración`);
+                    console.log(`   Frame ID: ${askFrame.slice(4, 6)}`);
+                    console.log(`   Session: ${askFrame.slice(6, 10)}`);
+                  }
+                });
+                
+                // Reset timeout for next response (either CONFIG or ACK)
+                // We sent an ASK, so we'll get either another CONFIG or an ACK (no more configs)
                 if (configTimeout) {
                   clearTimeout(configTimeout);
                 }
                 configTimeout = setTimeout(() => {
-                  console.log(`\n✅ Recepción de configuraciones completada (${configCount} configuración/es recibida/s)`);
-                  if (currentMessageType === "ask") {
-                    console.log(`   Se recibieron ${configCount} configuración(es) después del ASK`);
+                  console.log(`\n⏱️ Timeout esperando respuesta después de enviar ASK`);
+                  console.log(`   Se recibieron ${configCount} configuración(es) en total`);
+                  if (client && !client.closed) {
+                    client.close();
                   }
-                  client.close();
                   resolve();
                 }, CONFIG_WAIT_TIMEOUT);
                 
@@ -530,6 +539,12 @@ let hex = hexOpciones["auth"].toLowerCase();
               if (frameType === tConst.CODE_S_ACK.toLowerCase()) {
                 responseReceived = true;
                 clearTimeout(timeout);
+                
+                // Clear any pending config timeout since we got a response
+                if (configTimeout) {
+                  clearTimeout(configTimeout);
+                  configTimeout = null;
+                }
                 
                 if (trama.ack === tConst.CODE_OK) {
                   console.log("✅ Es ACK");
@@ -553,18 +568,33 @@ let hex = hexOpciones["auth"].toLowerCase();
                     console.log("🔐 Dispositivo autenticado");
                   }
                   
-                  // If this is ASK response, wait for configurations
+                  // If this is ASK response and we haven't received any configs yet, wait for configurations
+                  // If we've already received configs (configCount > 0), this ACK means no more configs
                   if (currentMessageType === "ask") {
-                    console.log(`\n⏳ Esperando configuraciones del servidor...`);
-                    console.log(`   (Timeout: ${CONFIG_WAIT_TIMEOUT / 1000} segundos)`);
-                    // Don't close client yet - wait for configs
-                    // Set timeout in case no configs arrive
-                    configTimeout = setTimeout(() => {
-                      console.log(`\nℹ️ No se recibieron configuraciones después del ASK`);
-                      client.close();
+                    if (configCount === 0) {
+                      // First ASK response - wait for configs
+                      console.log(`\n⏳ Esperando configuraciones del servidor...`);
+                      console.log(`   (Timeout: ${CONFIG_WAIT_TIMEOUT / 1000} segundos)`);
+                      // Don't close client yet - wait for configs
+                      // Set timeout in case no configs arrive
+                      configTimeout = setTimeout(() => {
+                        console.log(`\nℹ️ No se recibieron configuraciones después del ASK`);
+                        if (client && !client.closed) {
+                          client.close();
+                        }
+                        resolve();
+                      }, CONFIG_WAIT_TIMEOUT);
+                      return; // Don't close client yet
+                    } else {
+                      // ACK after receiving configs - means no more configs
+                      console.log(`\n✅ No hay más configuraciones pendientes`);
+                      console.log(`   Se recibieron ${configCount} configuración(es) en total`);
+                      if (client && !client.closed) {
+                        client.close();
+                      }
                       resolve();
-                    }, CONFIG_WAIT_TIMEOUT);
-                    return; // Don't close client yet
+                      return;
+                    }
                   }
                 } else if (trama.ack === tConst.CODE_NOK) {
                   console.log("❌ Es NACK - El servidor rechazó el mensaje");
@@ -579,7 +609,9 @@ let hex = hexOpciones["auth"].toLowerCase();
               
               // Close client if not waiting for configs
               if (currentMessageType !== "ask" || configTimeout === null) {
-                client.close();
+                if (client && !client.closed) {
+                  client.close();
+                }
                 resolve();
               }
             };
