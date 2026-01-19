@@ -371,31 +371,10 @@ async function processAskFrame(trama) {
     clearWaitingForAsk(trama.idSessionH, trama.idSessionL);
   }
 
-  // ASK always gets ACK response
-  respuesta = buildACK(trama);
-  if (!respuesta) {
-    // If buildACK returns null (session not found), create ACK anyway
-    // This shouldn't happen after authentication, but ensures ASK always gets ACK
-    console.warn("⚠️ Session not found in activeSessions for ASK, creating ACK anyway");
-    let ackResponse = {};
-    ackResponse.idTrama = tConst.CODE_S_ACK;
-    ackResponse.ack = tConst.CODE_OK;
-    ackResponse.idFrame = trama.idFrame || "00";
-    ackResponse.idSessionH = trama.idSessionH || "00";
-    ackResponse.idSessionL = trama.idSessionL || "00";
-    ackResponse.size = "0000";
-    ackResponse.value = "";
-    const cadena = buildTrama(ackResponse, false);
-    respuesta = cadena + calcularCRC(cadena);
-    
-    // Store the manually created ACK as last message for RASK resend
-    if (trama.idSessionH && trama.idSessionL) {
-      setSessionLastMessage(trama.idSessionH, trama.idSessionL, respuesta);
-    }
-  }
-
-  // Get session to find device topic/name
+  // Get session to find device topic/name and check for pending configs
   let pendingConfigs = [];
+  let nextPendingConfig = null;
+  
   if (trama.idSessionH && trama.idSessionL) {
     const session = getSession(trama.idSessionH, trama.idSessionL);
     console.log(`🔍 ASK Frame - Session: ${trama.idSessionH}${trama.idSessionL}, Session exists: ${!!session}, Topic: ${session?.topic || 'none'}`);
@@ -417,8 +396,11 @@ async function processAskFrame(trama) {
           console.log(`🔍 Found ${pendingConfigs.length} pending configuration(s) for device: ${device.name}`);
           
           if (pendingConfigs && pendingConfigs.length > 0) {
-            logEntry += ` | Found ${pendingConfigs.length} pending configuration(s) for device: ${device.name}`;
+            // Get the first pending config (will be sent instead of ACK)
+            nextPendingConfig = pendingConfigs[0];
+            logEntry += ` | Found ${pendingConfigs.length} pending configuration(s) for device: ${device.name} | Sending config: ${nextPendingConfig.config_type}`;
             console.log(`📦 Found ${pendingConfigs.length} pending configuration(s) for device: ${device.name}`);
+            console.log(`📤 Will send first pending config: ${nextPendingConfig.config_type} (${nextPendingConfig.config_code})`);
             pendingConfigs.forEach((cfg, idx) => {
               console.log(`   ${idx + 1}. ${cfg.config_type} (${cfg.config_code}) - Created: ${cfg.created_at}`);
             });
@@ -444,7 +426,37 @@ async function processAskFrame(trama) {
     console.log(`⚠️ ASK Frame missing session IDs`);
   }
 
-  return { respuesta, logEntry, pendingConfigs };
+  // Only send ACK if there are NO pending configs
+  // If there are pending configs, we'll send a config message instead
+  if (!nextPendingConfig) {
+    // No pending configs, send ACK
+    respuesta = buildACK(trama);
+    if (!respuesta) {
+      // If buildACK returns null (session not found), create ACK anyway
+      console.warn("⚠️ Session not found in activeSessions for ASK, creating ACK anyway");
+      let ackResponse = {};
+      ackResponse.idTrama = tConst.CODE_S_ACK;
+      ackResponse.ack = tConst.CODE_OK;
+      ackResponse.idFrame = trama.idFrame || "00";
+      ackResponse.idSessionH = trama.idSessionH || "00";
+      ackResponse.idSessionL = trama.idSessionL || "00";
+      ackResponse.size = "0000";
+      ackResponse.value = "";
+      const cadena = buildTrama(ackResponse, false);
+      respuesta = cadena + calcularCRC(cadena);
+      
+      // Store the manually created ACK as last message for RASK resend
+      if (trama.idSessionH && trama.idSessionL) {
+        setSessionLastMessage(trama.idSessionH, trama.idSessionL, respuesta);
+      }
+    }
+  } else {
+    // There are pending configs, don't send ACK yet
+    // respuesta will remain empty, and we'll send a config message instead
+    respuesta = null;
+  }
+
+  return { respuesta, logEntry, pendingConfigs, nextPendingConfig };
 }
 
 /**
@@ -885,11 +897,12 @@ async function processTstProtocol(message) {
       break;
     case tConst.CODE_R_ASK: // Trama de petición de configuración
       const askResult = await processAskFrame(trama);
-      respuesta = askResult.respuesta;
+      respuesta = askResult.respuesta; // May be null if there's a pending config
       logEntry = askResult.logEntry;
-      // Store pending configs in trama for later use in server.js
+      // Store pending configs and nextPendingConfig in trama for later use in server.js
       trama.pendingConfigs = askResult.pendingConfigs || [];
-      console.log(`🔍 ASK processed - Pending configs stored in trama: ${trama.pendingConfigs.length}`);
+      trama.nextPendingConfig = askResult.nextPendingConfig || null;
+      console.log(`🔍 ASK processed - Pending configs: ${trama.pendingConfigs.length}, Next config: ${trama.nextPendingConfig ? trama.nextPendingConfig.config_type : 'none'}`);
       break;
     case tConst.CODE_R_INFO: // Trama de información
       logEntry = "Trama de información";
@@ -931,7 +944,11 @@ async function processTstProtocol(message) {
       break;
   }
 
-  if (!respuesta) respuesta = buildNACK(trama);
+  // Only build NACK if respuesta is null and we don't have a pending config to send
+  // (ASK frames with pending configs will have null respuesta but nextPendingConfig)
+  if (!respuesta && !trama.nextPendingConfig) {
+    respuesta = buildNACK(trama);
+  }
 
   // Update last frame ID for non-authentication messages if session exists
   // (Session validation will be added in a later step)
@@ -940,19 +957,29 @@ async function processTstProtocol(message) {
   }
 
   logger(logEntry);
-  logger(respuesta);
+  if (respuesta) {
+    logger(respuesta);
+  }
 
-  // Return response as Buffer, along with pending configs if any
-  const buffer = Buffer.from(respuesta, "hex");
-  // Attach pending configs to buffer object (if any)
+  // Return response object (not just buffer) to include all metadata
+  // If respuesta is null (pending config case), create a dummy buffer but attach metadata
+  const buffer = respuesta ? Buffer.from(respuesta, "hex") : Buffer.alloc(0);
+  
+  // Attach metadata to buffer object
+  buffer.respuesta = respuesta; // May be null if sending config instead
+  buffer.sessionH = trama.idSessionH;
+  buffer.sessionL = trama.idSessionL;
+  
+  // Attach pending configs and nextPendingConfig to buffer object (if any)
   if (trama.pendingConfigs && trama.pendingConfigs.length > 0) {
     buffer.pendingConfigs = trama.pendingConfigs;
-    buffer.sessionH = trama.idSessionH;
-    buffer.sessionL = trama.idSessionL;
     console.log(`✅ Attached ${trama.pendingConfigs.length} pending config(s) to response buffer`);
-  } else {
-    console.log(`ℹ️ No pending configs to attach (trama.pendingConfigs: ${trama.pendingConfigs ? 'empty array' : 'undefined'})`);
   }
+  if (trama.nextPendingConfig) {
+    buffer.nextPendingConfig = trama.nextPendingConfig;
+    console.log(`✅ Attached nextPendingConfig: ${trama.nextPendingConfig.config_type} to response buffer`);
+  }
+  
   return buffer;
 }
 

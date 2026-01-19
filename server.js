@@ -9,6 +9,7 @@ import { initDatabase, deviceConfigsDB } from "./src/device-config/db.js";
 import { buildTrama, calcularCRC } from "./src/tst.js";
 import { updateSessionFrameId, getSession } from "./src/sessionManager.js";
 import * as tConst from "./src/const.js";
+import { logMessage } from "./src/messageLogger.js";
 
 dotenv.config(); // Carga las variables de .env
 //la versión actual de node no permite hacer imports de json tan directos, así que lo puenteo
@@ -34,6 +35,14 @@ server.on("message", async (msg, rinfo) => {
     console.log(`[${new Date().toISOString()}] Mensaje recibido de IP: ${rinfo.address}:${rinfo.port}`);
     console.log(`Datos recibidos: ${msg.toString("hex")}`);
 
+    // Extract session IDs from received message for logging
+    const msgHex = msg.toString("hex");
+    const sessionH = msgHex.length >= 8 ? msgHex.slice(6, 8) : null;
+    const sessionL = msgHex.length >= 10 ? msgHex.slice(8, 10) : null;
+    
+    // Log received message
+    logMessage(msg, "received", sessionH, sessionL);
+
     let response = await processTstProtocol(msg);
     
     // If response is null, either:
@@ -52,22 +61,13 @@ server.on("message", async (msg, rinfo) => {
       return;
     }
     
-    console.log(`respondiendo ${response.toString("hex")}`);
-
-    // Enviar respuesta al cliente
-    server.send(response, rinfo.port, rinfo.address, (err) => {
-      if (err) {
-        console.error("Error enviando respuesta:", err.message);
-      } else {
-        console.log(`Respuesta enviada a ${rinfo.address}:${rinfo.port}`);
-      }
-    });
-    
-    // If there are pending configurations, send them after the ASK ACK
-    console.log(`🔍 Checking for pending configs: ${response.pendingConfigs ? response.pendingConfigs.length : 'undefined'} configs found`);
-    
-    if (response.pendingConfigs && response.pendingConfigs.length > 0) {
-      console.log(`📤 Sending ${response.pendingConfigs.length} pending configuration(s)...`);
+    // Check if we should send a config message or ACK
+    // If nextPendingConfig exists, send that config instead of ACK
+    // The device will send another ASK after receiving the config
+    if (response.nextPendingConfig) {
+      // There's a pending config to send - send it instead of ACK
+      const config = response.nextPendingConfig;
+      console.log(`📤 Sending pending config: ${config.config_type} (${config.config_code})`);
       
       // Helper function to convert number to little-endian hex
       function numberToLittleEndianHex(num, bytes) {
@@ -79,84 +79,135 @@ server.on("message", async (msg, rinfo) => {
         return result;
       }
       
-      // Send each pending configuration
-      for (let i = 0; i < response.pendingConfigs.length; i++) {
-        const config = response.pendingConfigs[i];
-        try {
-          // Get current session to get the latest frame ID (fresh each iteration)
-          const session = getSession(response.sessionH, response.sessionL);
-          if (!session) {
-            console.warn(`⚠️ Session not found, skipping config ${config.id}`);
-            continue;
+      try {
+        // Get current session to get the latest frame ID
+        const session = getSession(response.sessionH, response.sessionL);
+        if (!session) {
+          console.warn(`⚠️ Session not found, cannot send config ${config.id}`);
+          // Fall back to sending ACK if session not found
+          if (response.respuesta) {
+            const responseHex = response.respuesta;
+            const responseSessionH = responseHex.length >= 8 ? responseHex.slice(6, 8) : null;
+            const responseSessionL = responseHex.length >= 10 ? responseHex.slice(8, 10) : null;
+            const ackBuffer = Buffer.from(response.respuesta, "hex");
+            server.send(ackBuffer, rinfo.port, rinfo.address, (err) => {
+              if (err) {
+                console.error("Error enviando respuesta:", err.message);
+              } else {
+                console.log(`Respuesta enviada a ${rinfo.address}:${rinfo.port}`);
+                logMessage(ackBuffer, "sent", responseSessionH, responseSessionL);
+              }
+            });
           }
-          
-          // Get current frame ID from session and increment it
-          let currentFrameId = session.lastFrameId || "00";
-          const frameIdNum = parseInt(currentFrameId, 16);
-          const nextFrameId = ((frameIdNum + 1) % 256).toString(16).padStart(2, "0");
-          
-          console.log(`📤 Sending config ${i + 1}/${response.pendingConfigs.length}: ${config.config_type} (${config.config_code}) with Frame ID: ${nextFrameId} (was: ${currentFrameId})`);
-          
-          // Rebuild the config frame with current session IDs and incremented frame ID
-          // Use the stored config_code and config_value from database
-          const valueBytes = config.config_value.length / 2;
-          const sizeHex = numberToLittleEndianHex(valueBytes, 2);
-          
-          // Build new config frame with current session and incremented frame ID
-          const configFrame = {
-            idTrama: tConst.CODE_S_CONF,
-            ack: config.config_code,
-            idFrame: nextFrameId,
-            idSessionH: response.sessionH,
-            idSessionL: response.sessionL,
-            size: sizeHex,
-            value: config.config_value
-          };
-          
-          const frameHex = buildTrama(configFrame, false);
-          const crc = calcularCRC(frameHex);
-          const completeFrame = frameHex + crc;
-          const configBuffer = Buffer.from(completeFrame, "hex");
-          
-          // Send configuration frame
-          server.send(configBuffer, rinfo.port, rinfo.address, (err) => {
+          return;
+        }
+        
+        // Get current frame ID from session and increment it
+        let currentFrameId = session.lastFrameId || "00";
+        const frameIdNum = parseInt(currentFrameId, 16);
+        const nextFrameId = ((frameIdNum + 1) % 256).toString(16).padStart(2, "0");
+        
+        console.log(`📤 Sending config: ${config.config_type} (${config.config_code}) with Frame ID: ${nextFrameId} (was: ${currentFrameId})`);
+        
+        // Rebuild the config frame with current session IDs and incremented frame ID
+        const valueBytes = config.config_value.length / 2;
+        const sizeHex = numberToLittleEndianHex(valueBytes, 2);
+        
+        // Build new config frame with current session and incremented frame ID
+        const configFrame = {
+          idTrama: tConst.CODE_S_CONF,
+          ack: config.config_code,
+          idFrame: nextFrameId,
+          idSessionH: response.sessionH,
+          idSessionL: response.sessionL,
+          size: sizeHex,
+          value: config.config_value
+        };
+        
+        const frameHex = buildTrama(configFrame, false);
+        const crc = calcularCRC(frameHex);
+        const completeFrame = frameHex + crc;
+        const configBuffer = Buffer.from(completeFrame, "hex");
+        
+        // Send configuration frame
+        server.send(configBuffer, rinfo.port, rinfo.address, (err) => {
+          if (err) {
+            console.error(`Error enviando configuración ${config.config_type}:`, err.message);
+          } else {
+            console.log(`✅ Configuración enviada: ${config.config_type} (${config.config_code}) - Frame ID: ${nextFrameId}`);
+            
+            // Log sent configuration message
+            logMessage(configBuffer, "sent", response.sessionH, response.sessionL);
+            
+            // Mark as sent in database
+            deviceConfigsDB.markAsSent(config.id, "Sent via ASK response");
+            
+            // Update session frame ID after sending
+            updateSessionFrameId(response.sessionH, response.sessionL, nextFrameId);
+          }
+        });
+      } catch (error) {
+        console.error(`Error procesando configuración ${config.id}:`, error.message);
+        // Fall back to sending ACK on error
+        if (response.respuesta) {
+          const responseHex = response.respuesta;
+          const responseSessionH = responseHex.length >= 8 ? responseHex.slice(6, 8) : null;
+          const responseSessionL = responseHex.length >= 10 ? responseHex.slice(8, 10) : null;
+          const ackBuffer = Buffer.from(response.respuesta, "hex");
+          server.send(ackBuffer, rinfo.port, rinfo.address, (err) => {
             if (err) {
-              console.error(`Error enviando configuración ${config.config_type}:`, err.message);
+              console.error("Error enviando respuesta:", err.message);
             } else {
-              console.log(`✅ Configuración enviada: ${config.config_type} (${config.config_code}) - Frame ID: ${nextFrameId}`);
-              
-              // Mark as sent in database
-              deviceConfigsDB.markAsSent(config.id, "Sent via ASK response");
+              console.log(`Respuesta enviada a ${rinfo.address}:${rinfo.port}`);
+              logMessage(ackBuffer, "sent", responseSessionH, responseSessionL);
             }
           });
-          
-          // Update session frame ID BEFORE next iteration (so next config gets the incremented value)
-          updateSessionFrameId(response.sessionH, response.sessionL, nextFrameId);
-          
-          // Small delay between configs to avoid overwhelming the device
-          await new Promise(resolve => setTimeout(resolve, 100));
-          
-        } catch (error) {
-          console.error(`Error procesando configuración ${config.id}:`, error.message);
         }
       }
+    } else {
+      // No pending configs, send ACK immediately
+      if (!response.respuesta) {
+        console.warn("⚠️ No response and no pending config - this shouldn't happen");
+        return;
+      }
       
-      console.log(`✅ Finished sending ${response.pendingConfigs.length} configuration(s)`);
+      console.log(`respondiendo ${response.respuesta}`);
+      
+      // Extract session IDs from response for logging
+      const responseHex = response.respuesta;
+      const responseSessionH = responseHex.length >= 8 ? responseHex.slice(6, 8) : null;
+      const responseSessionL = responseHex.length >= 10 ? responseHex.slice(8, 10) : null;
+      
+      const ackBuffer = Buffer.from(response.respuesta, "hex");
+      server.send(ackBuffer, rinfo.port, rinfo.address, (err) => {
+        if (err) {
+          console.error("Error enviando respuesta:", err.message);
+        } else {
+          console.log(`Respuesta enviada a ${rinfo.address}:${rinfo.port}`);
+          // Log sent message
+          logMessage(ackBuffer, "sent", responseSessionH, responseSessionL);
+        }
+      });
     }
   } catch (error) {
     console.error("Error procesando el mensaje:", error.message);
     try {
       // Intentar extraer información de la trama para construir NACK
       const msgHex = msg.toString("hex");
+      const nackSessionH = msgHex.slice(3 * 2, 4 * 2);
+      const nackSessionL = msgHex.slice(4 * 2, 5 * 2);
       let nack = buildNACK({
         idFrame: msgHex.slice(2 * 2, 3 * 2),
-        idSessionH: msgHex.slice(3 * 2, 4 * 2),
-        idSessionL: msgHex.slice(4 * 2, 5 * 2),
+        idSessionH: nackSessionH,
+        idSessionL: nackSessionL,
       });
       const buffer = Buffer.from(nack, "hex");
       server.send(buffer, rinfo.port, rinfo.address, (err) => {
         if (err) {
           console.error("Error enviando NACK:", err.message);
+        } else {
+          // Log sent NACK message
+          logMessage(buffer, "sent", nackSessionH, nackSessionL);
         }
       });
     } catch (nackError) {
