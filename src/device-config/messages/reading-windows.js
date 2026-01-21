@@ -1,68 +1,11 @@
 import chalk from "chalk";
 import { parseTimeToMinutes, minutesToTime, formatMinutesForDisplay } from "../utils/time-parser.js";
+import { numberToLittleEndianHex } from "../utils/hex-converter.js";
+import { parseInteger, parseBoolean } from "../utils/input-parser.js";
 
 /**
  * Helper functions for reading windows configuration
  */
-
-/**
- * Convert number to little-endian hex string
- * @param {number} value - Number to convert
- * @param {number} bytes - Number of bytes
- * @returns {string} Hex string in little-endian format
- */
-function numberToLittleEndianHex(value, bytes) {
-  let hex = "";
-  for (let i = 0; i < bytes; i++) {
-    const byte = (value >> (i * 8)) & 0xff;
-    hex += byte.toString(16).padStart(2, "0");
-  }
-  return hex;
-}
-
-/**
- * Parse integer with validation
- * @param {string} input - Input string
- * @param {number} min - Minimum value (optional)
- * @param {number} max - Maximum value (optional)
- * @returns {number|null} Parsed integer or null if invalid
- */
-function parseInteger(input, min = null, max = null) {
-  if (!input || !input.trim()) {
-    return null;
-  }
-  const num = parseInt(input.trim(), 10);
-  if (isNaN(num)) {
-    return null;
-  }
-  if (min !== null && num < min) {
-    return null;
-  }
-  if (max !== null && num > max) {
-    return null;
-  }
-  return num;
-}
-
-/**
- * Parse boolean from user input
- * @param {string} input - Input string
- * @param {boolean} defaultValue - Default value if input is empty
- * @returns {boolean|null} Parsed boolean or null if invalid
- */
-function parseBoolean(input, defaultValue = null) {
-  if (!input || !input.trim()) {
-    return defaultValue;
-  }
-  const lower = input.trim().toLowerCase();
-  if (lower === "y" || lower === "yes" || lower === "true" || lower === "1") {
-    return true;
-  }
-  if (lower === "n" || lower === "no" || lower === "false" || lower === "0") {
-    return false;
-  }
-  return null;
-}
 
 /**
  * Configure reading windows (up to 8 windows)

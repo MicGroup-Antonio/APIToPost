@@ -1,38 +1,9 @@
 import chalk from "chalk";
+import { stringToHexPadded, parseText } from "../utils/input-parser.js";
 
 /**
  * Helper functions for authorization parameters configuration
  */
-
-/**
- * Convert string to hex with padding
- * @param {string} str - String to convert
- * @param {number} lengthBytes - Target length in bytes
- * @returns {string} Hex string
- */
-function stringToHexPadded(str, lengthBytes) {
-  const buf = Buffer.from(str, "ascii");
-  const padding = Buffer.alloc(Math.max(lengthBytes - buf.length, 0), 0x00);
-  return Buffer.concat([buf, padding]).toString("hex");
-}
-
-/**
- * Parse text input with validation
- * @param {string} input - Input string
- * @param {boolean} required - Whether input is required
- * @param {number} maxLength - Maximum length (optional)
- * @returns {string|null} Parsed text or null if invalid
- */
-function parseText(input, required = false, maxLength = null) {
-  if (!input || !input.trim()) {
-    return required ? null : "";
-  }
-  const trimmed = input.trim();
-  if (maxLength !== null && trimmed.length > maxLength) {
-    return null;
-  }
-  return trimmed;
-}
 
 /**
  * Configure authorization parameters (username and password)

@@ -5,7 +5,10 @@ import { initDatabase, closeDatabase, getDatabase, deviceDB, deviceConfigsDB, tr
 import { configureReadingWindows } from "./messages/reading-windows.js";
 import { configureTransmissionWindows } from "./messages/transmission-windows.js";
 import { configureAuthorization } from "./messages/authorization.js";
+import { configureTemporaryMaxConnectionTime } from "./messages/temporary-max-connection-time.js";
 import { formatMinutesForDisplay } from "./utils/time-parser.js";
+import { numberToLittleEndianHex } from "./utils/hex-converter.js";
+import { parseInteger, parseBoolean, parseText, parsePort, isValidHex, stringToHexPadded } from "./utils/input-parser.js";
 import chalk from "chalk";
 
 // Force color output for Git Bash and Windows terminals
@@ -91,38 +94,6 @@ function ask(question) {
  */
 
 /**
- * Validates and parses an integer
- * @param {string} input - Input string
- * @param {number} min - Minimum value (optional)
- * @param {number} max - Maximum value (optional)
- * @param {number} defaultValue - Default value if input is empty
- * @returns {number|null} Parsed integer or null if invalid
- */
-function parseInteger(input, min = null, max = null, defaultValue = null) {
-  const trimmed = input.trim();
-  if (!trimmed && defaultValue !== null) {
-    return defaultValue;
-  }
-  if (!trimmed) {
-    return null;
-  }
-  
-  const parsed = parseInt(trimmed, 10);
-  if (isNaN(parsed)) {
-    return null;
-  }
-  
-  if (min !== null && parsed < min) {
-    return null;
-  }
-  if (max !== null && parsed > max) {
-    return null;
-  }
-  
-  return parsed;
-}
-
-/**
  * Validates IP address format (IPv4)
  * @param {string} ip - IP address string
  * @returns {boolean} True if valid IP format
@@ -143,95 +114,6 @@ function isValidIP(ip) {
   });
 }
 
-/**
- * Validates hex string format
- * @param {string} hex - Hex string
- * @returns {boolean} True if valid hex format
- */
-function isValidHex(hex) {
-  if (!hex || !hex.trim()) {
-    return false;
-  }
-  
-  const trimmed = hex.trim().toLowerCase();
-  return /^[0-9a-f]+$/.test(trimmed);
-}
-
-/**
- * Validates and trims text input
- * @param {string} input - Input string
- * @param {boolean} required - Whether field is required
- * @param {number} maxLength - Maximum length (optional)
- * @returns {string|null} Trimmed string or null if invalid
- */
-function parseText(input, required = false, maxLength = null) {
-  const trimmed = input.trim();
-  
-  if (required && !trimmed) {
-    return null;
-  }
-  
-  if (maxLength !== null && trimmed.length > maxLength) {
-    return null;
-  }
-  
-  return trimmed || null;
-}
-
-/**
- * Validates port number (1-65535)
- * @param {string} input - Port input string
- * @param {number} defaultValue - Default port if input is empty
- * @returns {number|null} Parsed port or null if invalid
- */
-function parsePort(input, defaultValue = null) {
-  return parseInteger(input, 1, 65535, defaultValue);
-}
-
-/**
- * Validates boolean input (y/n, yes/no, 1/0, true/false)
- * @param {string} input - Input string
- * @param {boolean} defaultValue - Default value if input is empty
- * @returns {boolean|null} Boolean value or null if invalid
- */
-function parseBoolean(input, defaultValue = null) {
-  const trimmed = input.trim().toLowerCase();
-  
-  if (!trimmed && defaultValue !== null) {
-    return defaultValue;
-  }
-  
-  if (['y', 'yes', '1', 'true', 'on'].includes(trimmed)) {
-    return true;
-  }
-  if (['n', 'no', '0', 'false', 'off'].includes(trimmed)) {
-    return false;
-  }
-  
-  return null;
-}
-
-/**
- * Converts a string to hex and pads to specified byte length
- */
-function stringToHexPadded(str, lengthBytes) {
-  const buf = Buffer.from(str, "ascii");
-  const padding = Buffer.alloc(Math.max(lengthBytes - buf.length, 0), 0x00);
-  return Buffer.concat([buf, padding]).toString("hex");
-}
-
-/**
- * Converts a number to little-endian hex string
- */
-function numberToLittleEndianHex(num, bytes) {
-  let hex = num.toString(16).padStart(bytes * 2, "0");
-  // Convert to little-endian (swap bytes)
-  let result = "";
-  for (let i = bytes - 1; i >= 0; i--) {
-    result += hex.slice(i * 2, (i + 1) * 2);
-  }
-  return result;
-}
 
 /**
  * Builds a CONFIG frame
@@ -431,17 +313,7 @@ async function getConfigParameters(configCode) {
       return numberToLittleEndianHex(tmaxSeconds, 4);
       
     case tConst.CODE_C_TTMAX:
-      console.log(chalk.cyan("\n=== Temporary Max Connection Time ==="));
-      let ttmaxSeconds;
-      while (true) {
-        const secondsInput = await ask(chalk.yellow("Temporary maximum connection time (seconds): "));
-        ttmaxSeconds = parseInteger(secondsInput, 0);
-        if (ttmaxSeconds !== null) {
-          break;
-        }
-        console.log(chalk.red("❌ Invalid number. Please enter a valid integer (>= 0)."));
-      }
-      return numberToLittleEndianHex(ttmaxSeconds, 4);
+      return await configureTemporaryMaxConnectionTime(ask);
       
     case tConst.CODE_C_WMBUS:
       console.log(chalk.cyan("\n=== WMBUS Reading Time ==="));
@@ -1297,6 +1169,17 @@ async function updatePendingConfig(config) {
     } else if (config.config_code === tConst.CODE_C_AUTH) {
       const existingParams = authorizationParametersDB.getByDeviceConfigId(config.id);
       newValueHex = await configureAuthorization(ask, existingParams);
+    } else if (config.config_code === tConst.CODE_C_TTMAX) {
+      // Parse existing value from config_value (4 bytes little-endian)
+      let existingValue = null;
+      if (config.config_value && config.config_value.length >= 8) {
+        existingValue = parseInt(
+          config.config_value.substring(6, 8) + config.config_value.substring(4, 6) + 
+          config.config_value.substring(2, 4) + config.config_value.substring(0, 2), 
+          16
+        );
+      }
+      newValueHex = await configureTemporaryMaxConnectionTime(ask, existingValue);
     } else {
       newValueHex = await getConfigParameters(config.config_code);
     }
