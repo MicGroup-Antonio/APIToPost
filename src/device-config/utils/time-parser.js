@@ -92,3 +92,22 @@ export function formatMinutesForDisplay(minutes) {
   return `${timeStr} (${minutes} min)`;
 }
 
+/**
+ * Format minutes to human-readable time string
+ * @param {number} minutes - Time in minutes
+ * @returns {string} Formatted time string (e.g., "5 minute(s)" or "2 hour(s) 30 minute(s)")
+ */
+export function formatMinutes(minutes) {
+  if (minutes < 60) {
+    return `${minutes} minute(s)`;
+  } else {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    let result = `${hours} hour(s)`;
+    if (mins > 0) {
+      result += ` ${mins} minute(s)`;
+    }
+    return result;
+  }
+}
+

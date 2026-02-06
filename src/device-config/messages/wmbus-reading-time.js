@@ -4,32 +4,32 @@ import { parseInteger } from "../utils/input-parser.js";
 import { formatMinutes } from "../utils/time-parser.js";
 
 /**
- * Helper functions for temporary maximum connection time configuration
+ * Helper functions for WMBUS reading time configuration
  */
 
 /**
- * Configure temporary maximum connection time
+ * Configure WMBUS reading time
  * @param {Function} ask - Function to prompt user for input
  * @param {number|null} existingValue - Optional existing value in minutes to pre-fill
- * @returns {Promise<string>} Hex value for the configuration frame (single byte hex, in minutes)
+ * @returns {Promise<string>} Hex value for the configuration frame (0200 prefix + 2 bytes little-endian, in minutes)
  */
-export async function configureTemporaryMaxConnectionTime(ask, existingValue = null) {
+export async function configureWmbusReadingTime(ask, existingValue = null) {
   console.clear();
   console.log(chalk.cyan("═══════════════════════════════════════════════════════"));
-  console.log(chalk.cyan.bold("         TEMPORARY MAX CONNECTION TIME"));
+  console.log(chalk.cyan.bold("         WMBUS READING TIME"));
   console.log(chalk.cyan("═══════════════════════════════════════════════════════"));
   console.log("");
-  console.log(chalk.yellow("Configure the temporary maximum connection time."));
+  console.log(chalk.yellow("Configure the maximum WMBUS reading time."));
   console.log(chalk.white("This value specifies the maximum time (in minutes) that"));
-  console.log(chalk.white("the device can maintain a connection temporarily."));
-  console.log(chalk.gray("Value is stored as a single byte in hex format (0-255 minutes)."));
+  console.log(chalk.white("the device will listen for WMBUS readings."));
+  console.log(chalk.gray("Using 2-byte format for larger range (0200 prefix)."));
   console.log("");
   
   // existingValue is already in minutes (from parsing)
   let existingMinutes = existingValue;
   if (existingMinutes !== null && existingMinutes !== undefined) {
     console.log(chalk.yellow.bold("Current Configuration:"));
-    console.log(chalk.white(`   Temporary Max Connection Time: ${existingMinutes} minute(s)`));
+    console.log(chalk.white(`   WMBUS Reading Time: ${existingMinutes} minute(s)`));
     console.log(chalk.gray(`   (${formatMinutes(existingMinutes)})`));
     console.log("");
   }
@@ -37,8 +37,8 @@ export async function configureTemporaryMaxConnectionTime(ask, existingValue = n
   let minutes;
   while (true) {
     const prompt = existingMinutes !== null && existingMinutes !== undefined
-      ? chalk.yellow(`Temporary maximum connection time in minutes (current: ${existingMinutes}, press Enter to keep): `)
-      : chalk.yellow("Temporary maximum connection time (minutes): ");
+      ? chalk.yellow(`WMBUS reading time in minutes (current: ${existingMinutes}, press Enter to keep): `)
+      : chalk.yellow("WMBUS reading time (minutes): ");
     
     const minutesInput = await ask(prompt);
     
@@ -51,9 +51,9 @@ export async function configureTemporaryMaxConnectionTime(ask, existingValue = n
     
     minutes = parseInteger(minutesInput, 0);
     if (minutes !== null) {
-      // Validate range for single byte (0-255)
-      if (minutes > 255) {
-        console.log(chalk.red("❌ Value too large. Maximum is 255 minutes for single byte format."));
+      // Validate range for 2-byte unsigned integer (0-65535)
+      if (minutes > 65535) {
+        console.log(chalk.red("❌ Value too large. Maximum is 65535 minutes."));
         continue;
       }
       break;
@@ -63,15 +63,19 @@ export async function configureTemporaryMaxConnectionTime(ask, existingValue = n
   
   console.log("");
   console.log(chalk.green("✓ Configuration:"));
-  console.log(chalk.white(`   Temporary Max Connection Time: ${minutes} minute(s)`));
+  console.log(chalk.white(`   WMBUS Reading Time: ${minutes} minute(s)`));
   console.log(chalk.gray(`   (${formatMinutes(minutes)})`));
   console.log("");
   
-  // Store minutes directly as single byte hex (e.g., 0x14 = 20 minutes)
-  const hexValue = minutes.toString(16).padStart(2, "0").toLowerCase();
+  // Format: 0200 (prefix for 2-byte) + 2 bytes little-endian (minutes)
+  // Example: 02006801 = 360 minutes (6801 is little-endian for 0168 = 360)
+  const prefix = "0200";
+  const minutesHex = numberToLittleEndianHex(minutes, 2);
+  const hexValue = prefix + minutesHex;
   
-  console.log(chalk.cyan("Hex value (single byte, in minutes):"));
-  console.log(chalk.white(`   ${hexValue} (0x${hexValue} = ${minutes} minutes)`));
+  console.log(chalk.cyan("Hex value (0200 prefix + 2 bytes little-endian, in minutes):"));
+  console.log(chalk.white(`   ${hexValue} (${minutes} minutes)`));
+  console.log(chalk.gray(`   Prefix: ${prefix} | Value: ${minutesHex}`));
   console.log("");
   
   await ask(chalk.gray("Press Enter to continue..."));

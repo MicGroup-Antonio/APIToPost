@@ -6,7 +6,8 @@ import { configureReadingWindows } from "./messages/reading-windows.js";
 import { configureTransmissionWindows } from "./messages/transmission-windows.js";
 import { configureAuthorization } from "./messages/authorization.js";
 import { configureTemporaryMaxConnectionTime } from "./messages/temporary-max-connection-time.js";
-import { formatMinutesForDisplay } from "./utils/time-parser.js";
+import { configureWmbusReadingTime } from "./messages/wmbus-reading-time.js";
+import { formatMinutesForDisplay, formatMinutes } from "./utils/time-parser.js";
 import { numberToLittleEndianHex } from "./utils/hex-converter.js";
 import { parseInteger, parseBoolean, parseText, parsePort, isValidHex, stringToHexPadded } from "./utils/input-parser.js";
 import chalk from "chalk";
@@ -316,17 +317,7 @@ async function getConfigParameters(configCode) {
       return await configureTemporaryMaxConnectionTime(ask);
       
     case tConst.CODE_C_WMBUS:
-      console.log(chalk.cyan("\n=== WMBUS Reading Time ==="));
-      let wmbusSeconds;
-      while (true) {
-        const secondsInput = await ask(chalk.yellow("WMBUS reading time (seconds): "));
-        wmbusSeconds = parseInteger(secondsInput, 0);
-        if (wmbusSeconds !== null) {
-          break;
-        }
-        console.log(chalk.red("❌ Invalid number. Please enter a valid integer (>= 0)."));
-      }
-      return numberToLittleEndianHex(wmbusSeconds, 4);
+      return await configureWmbusReadingTime(ask);
       
     default:
       let customValue;
@@ -905,28 +896,37 @@ function parseConfigParameters(configCode, configValue, configId) {
         break;
 
       case tConst.CODE_C_TTMAX:
-        // Temporary Max Connection Time: seconds (4 bytes LE)
-        if (configValue.length >= 8) {
-          const seconds = parseInt(
-            configValue.substring(6, 8) + configValue.substring(4, 6) + 
-            configValue.substring(2, 4) + configValue.substring(0, 2), 
-            16
-          );
-          params.parsed.seconds = seconds;
-          params.parsed.formatted = `${seconds} seconds (${Math.floor(seconds / 60)} min ${seconds % 60} sec)`;
+        // Temporary Max Connection Time: single byte hex (minutes)
+        // Example: 0x14 = 20 minutes
+        if (configValue.length >= 2) {
+          const minutes = parseInt(configValue.substring(0, 2), 16);
+          params.parsed.minutes = minutes;
+          params.parsed.formatted = `${minutes} minutes (${formatMinutes(minutes)})`;
         }
         break;
 
       case tConst.CODE_C_WMBUS:
-        // WMBUS Reading Time: seconds (4 bytes LE)
-        if (configValue.length >= 8) {
-          const seconds = parseInt(
-            configValue.substring(6, 8) + configValue.substring(4, 6) + 
-            configValue.substring(2, 4) + configValue.substring(0, 2), 
-            16
-          );
-          params.parsed.seconds = seconds;
-          params.parsed.formatted = `${seconds} seconds (${Math.floor(seconds / 60)} min ${seconds % 60} sec)`;
+        // WMBUS Reading Time: 0200 prefix + 2 bytes little-endian (minutes)
+        // Format: 0200 + 2 bytes LE = 6 hex chars total
+        // Example: 02006801 = 360 minutes (6801 is little-endian, swap to 0168 = 360)
+        if (configValue.length >= 6) {
+          // Check if it starts with 0200 (2-byte format)
+          if (configValue.substring(0, 4) === "0200") {
+            // Extract the 2-byte little-endian value (bytes 4-5)
+            // Little-endian: first byte is low, second is high - swap to get actual value
+            const lowByte = configValue.substring(4, 6);
+            const highByte = configValue.substring(6, 8);
+            const minutes = parseInt(highByte + lowByte, 16);
+            params.parsed.minutes = minutes;
+            params.parsed.formatted = `${minutes} minutes (${formatMinutes(minutes)})`;
+          } else if (configValue.length >= 4) {
+            // Fallback: try to parse as 1-byte format (0100 prefix)
+            if (configValue.substring(0, 4) === "0100") {
+              const minutes = parseInt(configValue.substring(4, 6), 16);
+              params.parsed.minutes = minutes;
+              params.parsed.formatted = `${minutes} minutes`;
+            }
+          }
         }
         break;
 
@@ -1013,12 +1013,26 @@ function displayConfigParameters(params) {
       break;
 
     case tConst.CODE_C_TMAX:
-    case tConst.CODE_C_TTMAX:
-    case tConst.CODE_C_WMBUS:
       if (params.parsed.formatted) {
         console.log(chalk.white(`   Time: `) + chalk.blue(params.parsed.formatted));
       } else if (params.parsed.seconds !== undefined) {
         console.log(chalk.white(`   Seconds: `) + chalk.blue(params.parsed.seconds));
+      }
+      break;
+
+    case tConst.CODE_C_TTMAX:
+      if (params.parsed.formatted) {
+        console.log(chalk.white(`   Time: `) + chalk.blue(params.parsed.formatted));
+      } else if (params.parsed.minutes !== undefined) {
+        console.log(chalk.white(`   Minutes: `) + chalk.blue(params.parsed.minutes));
+      }
+      break;
+
+    case tConst.CODE_C_WMBUS:
+      if (params.parsed.formatted) {
+        console.log(chalk.white(`   Time: `) + chalk.blue(params.parsed.formatted));
+      } else if (params.parsed.minutes !== undefined) {
+        console.log(chalk.white(`   Minutes: `) + chalk.blue(params.parsed.minutes));
       }
       break;
 
@@ -1170,16 +1184,29 @@ async function updatePendingConfig(config) {
       const existingParams = authorizationParametersDB.getByDeviceConfigId(config.id);
       newValueHex = await configureAuthorization(ask, existingParams);
     } else if (config.config_code === tConst.CODE_C_TTMAX) {
-      // Parse existing value from config_value (4 bytes little-endian)
+      // Parse existing value from config_value (single byte hex, minutes)
       let existingValue = null;
-      if (config.config_value && config.config_value.length >= 8) {
-        existingValue = parseInt(
-          config.config_value.substring(6, 8) + config.config_value.substring(4, 6) + 
-          config.config_value.substring(2, 4) + config.config_value.substring(0, 2), 
-          16
-        );
+      if (config.config_value && config.config_value.length >= 2) {
+        existingValue = parseInt(config.config_value.substring(0, 2), 16);
       }
       newValueHex = await configureTemporaryMaxConnectionTime(ask, existingValue);
+    } else if (config.config_code === tConst.CODE_C_WMBUS) {
+      // Parse existing value from config_value (0200 prefix + 2 bytes little-endian in minutes)
+      let existingValue = null;
+      if (config.config_value && config.config_value.length >= 6) {
+        // Check if it's 2-byte format (0200 prefix)
+        if (config.config_value.substring(0, 4) === "0200") {
+          // Extract 2-byte little-endian value (bytes 4-5)
+          // Little-endian: first byte is low, second is high - swap to get actual value
+          const lowByte = config.config_value.substring(4, 6);
+          const highByte = config.config_value.substring(6, 8);
+          existingValue = parseInt(highByte + lowByte, 16);
+        } else if (config.config_value.length >= 4 && config.config_value.substring(0, 4) === "0100") {
+          // Fallback: 1-byte format
+          existingValue = parseInt(config.config_value.substring(4, 6), 16);
+        }
+      }
+      newValueHex = await configureWmbusReadingTime(ask, existingValue);
     } else {
       newValueHex = await getConfigParameters(config.config_code);
     }
