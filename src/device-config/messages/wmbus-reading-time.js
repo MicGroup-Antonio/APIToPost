@@ -1,5 +1,4 @@
 import chalk from "chalk";
-import { numberToLittleEndianHex } from "../utils/hex-converter.js";
 import { parseInteger } from "../utils/input-parser.js";
 import { formatMinutes } from "../utils/time-parser.js";
 
@@ -11,7 +10,7 @@ import { formatMinutes } from "../utils/time-parser.js";
  * Configure WMBUS reading time
  * @param {Function} ask - Function to prompt user for input
  * @param {number|null} existingValue - Optional existing value in minutes to pre-fill
- * @returns {Promise<string>} Hex value for the configuration frame (0200 prefix + 2 bytes little-endian, in minutes)
+ * @returns {Promise<string>} Hex value for the configuration frame (2 bytes big-endian, in minutes)
  */
 export async function configureWmbusReadingTime(ask, existingValue = null) {
   console.clear();
@@ -22,7 +21,7 @@ export async function configureWmbusReadingTime(ask, existingValue = null) {
   console.log(chalk.yellow("Configure the maximum WMBUS reading time."));
   console.log(chalk.white("This value specifies the maximum time (in minutes) that"));
   console.log(chalk.white("the device will listen for WMBUS readings."));
-  console.log(chalk.gray("Using 2-byte format for larger range (0200 prefix)."));
+  console.log(chalk.gray("Using 2-byte format for larger range (big-endian, per documentation)."));
   console.log("");
   
   // existingValue is already in minutes (from parsing)
@@ -67,15 +66,16 @@ export async function configureWmbusReadingTime(ask, existingValue = null) {
   console.log(chalk.gray(`   (${formatMinutes(minutes)})`));
   console.log("");
   
-  // Format: 0200 (prefix for 2-byte) + 2 bytes little-endian (minutes)
-  // Example: 02006801 = 360 minutes (6801 is little-endian for 0168 = 360)
-  const prefix = "0200";
-  const minutesHex = numberToLittleEndianHex(minutes, 2);
-  const hexValue = prefix + minutesHex;
+  // Format: 2 bytes big-endian (minutes) - per documentation
+  // Documentation shows: 0x0190 = 400 minutes (big-endian format)
+  // Example: 60 minutes = 0x003C = "003c" (big-endian, 2 bytes)
+  // Example: 400 minutes = 0x0190 = "0190" (big-endian, 2 bytes)
+  const minutesHex = minutes.toString(16).padStart(4, "0").toLowerCase();
+  const hexValue = minutesHex;
   
-  console.log(chalk.cyan("Hex value (0200 prefix + 2 bytes little-endian, in minutes):"));
-  console.log(chalk.white(`   ${hexValue} (${minutes} minutes)`));
-  console.log(chalk.gray(`   Prefix: ${prefix} | Value: ${minutesHex}`));
+  console.log(chalk.cyan("Hex value (2 bytes big-endian, in minutes):"));
+  console.log(chalk.white(`   ${hexValue} (${minutes} minutes = 0x${hexValue.toUpperCase()})`));
+  console.log(chalk.gray(`   Format: Big-endian (MSB first), per documentation`));
   console.log("");
   
   await ask(chalk.gray("Press Enter to continue..."));

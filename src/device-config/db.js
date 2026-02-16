@@ -113,6 +113,27 @@ function createTables() {
     )
   `);
   
+  // Table for storing network configuration parameters (WEV)
+  // Format: 191 bytes total with Final Operator, APN, User, Password, eSIM flag, and optional Intermediate settings
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS network_parameters (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_config_id INTEGER NOT NULL,
+      final_operator TEXT NOT NULL,
+      final_apn TEXT NOT NULL,
+      user TEXT NOT NULL,
+      password TEXT NOT NULL,
+      esim INTEGER DEFAULT 0 CHECK(esim IN (0, 1)),
+      intermediate_operator TEXT NOT NULL,
+      intermediate_apn TEXT NOT NULL,
+      intermediate_user TEXT NOT NULL,
+      intermediate_password TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (device_config_id) REFERENCES device_configs(id) ON DELETE CASCADE,
+      UNIQUE(device_config_id)
+    )
+  `);
+  
   // Create indexes for better performance
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_device_configs_device ON device_configs(device_id);
@@ -123,6 +144,7 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_reading_windows_config ON reading_windows(device_config_id);
     CREATE INDEX IF NOT EXISTS idx_reading_windows_number ON reading_windows(device_config_id, window_number);
     CREATE INDEX IF NOT EXISTS idx_authorization_parameters_config ON authorization_parameters(device_config_id);
+    CREATE INDEX IF NOT EXISTS idx_network_parameters_config ON network_parameters(device_config_id);
   `);
 }
 
@@ -580,6 +602,114 @@ export const authorizationParametersDB = {
     const db = getDatabase();
     return db.prepare(`
       DELETE FROM authorization_parameters 
+      WHERE device_config_id = ?
+    `).run(deviceConfigId);
+  }
+};
+
+// Network parameters operations
+export const networkParametersDB = {
+  /**
+   * Add or update network parameters for a device config
+   * @param {Object} params - Network parameters
+   * @param {number} params.deviceConfigId - Device config ID
+   * @param {string} params.finalOperator - Final Operator (max 10 chars)
+   * @param {string} params.finalAPN - Final APN (max 40 chars)
+   * @param {string} params.user - User (max 20 chars)
+   * @param {string} params.password - Password (max 20 chars)
+   * @param {boolean} params.eSIM - eSIM reconfiguration flag
+   * @param {string} params.intermediateOperator - Intermediate Operator (max 10 chars)
+   * @param {string} params.intermediateAPN - Intermediate APN (max 40 chars)
+   * @param {string} params.intermediateUser - Intermediate User (max 20 chars)
+   * @param {string} params.intermediatePassword - Intermediate Password (max 20 chars)
+   */
+  upsert(params) {
+    const {
+      deviceConfigId,
+      finalOperator = "",
+      finalAPN = "",
+      user = "",
+      password = "",
+      eSIM = false,
+      intermediateOperator = "",
+      intermediateAPN = "",
+      intermediateUser = "",
+      intermediatePassword = ""
+    } = params;
+    const db = getDatabase();
+    const existing = db.prepare(`
+      SELECT id FROM network_parameters 
+      WHERE device_config_id = ?
+    `).get(deviceConfigId);
+    
+    if (existing) {
+      db.prepare(`
+        UPDATE network_parameters 
+        SET final_operator = ?, final_apn = ?, user = ?, password = ?, esim = ?,
+            intermediate_operator = ?, intermediate_apn = ?, intermediate_user = ?, intermediate_password = ?
+        WHERE id = ?
+      `).run(
+        finalOperator || "",
+        finalAPN || "",
+        user || "",
+        password || "",
+        eSIM ? 1 : 0,
+        intermediateOperator || "",
+        intermediateAPN || "",
+        intermediateUser || "",
+        intermediatePassword || "",
+        existing.id
+      );
+      return existing.id;
+    } else {
+      const result = db.prepare(`
+        INSERT INTO network_parameters 
+        (device_config_id, final_operator, final_apn, user, password, esim,
+         intermediate_operator, intermediate_apn, intermediate_user, intermediate_password)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        deviceConfigId,
+        finalOperator || "",
+        finalAPN || "",
+        user || "",
+        password || "",
+        eSIM ? 1 : 0,
+        intermediateOperator || "",
+        intermediateAPN || "",
+        intermediateUser || "",
+        intermediatePassword || ""
+      );
+      return result.lastInsertRowid;
+    }
+  },
+  
+  /**
+   * Get network parameters for a device config
+   */
+  getByDeviceConfigId(deviceConfigId) {
+    const db = getDatabase();
+    const result = db.prepare(`
+      SELECT * FROM network_parameters 
+      WHERE device_config_id = ?
+    `).get(deviceConfigId);
+    
+    if (result) {
+      // Convert esim from integer (0/1) to boolean
+      return {
+        ...result,
+        eSIM: result.esim === 1
+      };
+    }
+    return null;
+  },
+  
+  /**
+   * Delete network parameters for a device config
+   */
+  deleteByDeviceConfigId(deviceConfigId) {
+    const db = getDatabase();
+    return db.prepare(`
+      DELETE FROM network_parameters 
       WHERE device_config_id = ?
     `).run(deviceConfigId);
   }

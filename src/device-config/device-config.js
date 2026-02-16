@@ -1,12 +1,13 @@
 import { calcularCRC, buildTrama } from "../tst.js";
 import * as tConst from "../const.js";
 import readline from "readline";
-import { initDatabase, closeDatabase, getDatabase, deviceDB, deviceConfigsDB, transmissionWindowsDB, readingWindowsDB, authorizationParametersDB } from "./db.js";
+import { initDatabase, closeDatabase, getDatabase, deviceDB, deviceConfigsDB, transmissionWindowsDB, readingWindowsDB, authorizationParametersDB, networkParametersDB } from "./db.js";
 import { configureReadingWindows } from "./messages/reading-windows.js";
 import { configureTransmissionWindows } from "./messages/transmission-windows.js";
 import { configureAuthorization } from "./messages/authorization.js";
 import { configureTemporaryMaxConnectionTime } from "./messages/temporary-max-connection-time.js";
 import { configureWmbusReadingTime } from "./messages/wmbus-reading-time.js";
+import { configureNetwork } from "./messages/network-config.js";
 import { formatMinutesForDisplay, formatMinutes } from "./utils/time-parser.js";
 import { numberToLittleEndianHex } from "./utils/hex-converter.js";
 import { parseInteger, parseBoolean, parseText, parsePort, isValidHex, stringToHexPadded } from "./utils/input-parser.js";
@@ -162,17 +163,7 @@ async function getConfigParameters(configCode) {
       return psmValue;
       
     case tConst.CODE_C_WEV:
-      console.log(chalk.cyan("\n=== Network Configuration ==="));
-      let networkValue;
-      while (true) {
-        const hexInput = await ask(chalk.yellow("Enter network configuration value (hex): "));
-        if (isValidHex(hexInput)) {
-          networkValue = hexInput.trim().toLowerCase();
-          break;
-        }
-        console.log(chalk.red("❌ Invalid hex format. Please enter hexadecimal characters only (0-9, a-f)."));
-      }
-      return networkValue;
+      return await configureNetwork(ask);
       
     case tConst.CODE_C_SERV:
       console.log(chalk.cyan("\n=== Server Parameters ==="));
@@ -906,26 +897,30 @@ function parseConfigParameters(configCode, configValue, configId) {
         break;
 
       case tConst.CODE_C_WMBUS:
-        // WMBUS Reading Time: 0200 prefix + 2 bytes little-endian (minutes)
-        // Format: 0200 + 2 bytes LE = 6 hex chars total
-        // Example: 02006801 = 360 minutes (6801 is little-endian, swap to 0168 = 360)
-        if (configValue.length >= 6) {
-          // Check if it starts with 0200 (2-byte format)
-          if (configValue.substring(0, 4) === "0200") {
-            // Extract the 2-byte little-endian value (bytes 4-5)
-            // Little-endian: first byte is low, second is high - swap to get actual value
+        // WMBUS Reading Time: Per documentation
+        // Format 1: 1 byte (0-255 minutes) - e.g., "05" = 5 minutes
+        // Format 2: 2 bytes big-endian (0-65535 minutes) - e.g., "0190" = 400 minutes
+        // Also supports legacy format: 0200 prefix + 2 bytes little-endian (for backward compatibility)
+        if (configValue.length >= 2) {
+          // Check for legacy format with 0200 prefix (backward compatibility)
+          if (configValue.length >= 6 && configValue.substring(0, 4) === "0200") {
+            // Legacy: 0200 prefix + 2 bytes little-endian
             const lowByte = configValue.substring(4, 6);
             const highByte = configValue.substring(6, 8);
             const minutes = parseInt(highByte + lowByte, 16);
             params.parsed.minutes = minutes;
+            params.parsed.formatted = `${minutes} minutes (${formatMinutes(minutes)}) [legacy format]`;
+          } else if (configValue.length === 2) {
+            // Format 1: 1 byte (e.g., "05" = 5 minutes)
+            const minutes = parseInt(configValue, 16);
+            params.parsed.minutes = minutes;
             params.parsed.formatted = `${minutes} minutes (${formatMinutes(minutes)})`;
           } else if (configValue.length >= 4) {
-            // Fallback: try to parse as 1-byte format (0100 prefix)
-            if (configValue.substring(0, 4) === "0100") {
-              const minutes = parseInt(configValue.substring(4, 6), 16);
-              params.parsed.minutes = minutes;
-              params.parsed.formatted = `${minutes} minutes`;
-            }
+            // Format 2: 2 bytes big-endian (e.g., "0190" = 400 minutes)
+            // Big-endian: MSB first, so parse directly
+            const minutes = parseInt(configValue.substring(0, 4), 16);
+            params.parsed.minutes = minutes;
+            params.parsed.formatted = `${minutes} minutes (${formatMinutes(minutes)})`;
           }
         }
         break;
@@ -1166,13 +1161,36 @@ async function updatePendingConfig(config) {
     }
   }
   
+  // If this is a network config, show existing parameters
+  if (config.config_code === tConst.CODE_C_WEV) {
+    const existingParams = networkParametersDB.getByDeviceConfigId(config.id);
+    if (existingParams) {
+      console.log(chalk.yellow.bold("Current Network Parameters:"));
+      console.log(chalk.white(`   Final Operator: `) + chalk.blue(existingParams.final_operator || "(empty)"));
+      console.log(chalk.white(`   Final APN: `) + chalk.blue(existingParams.final_apn || "(empty)"));
+      console.log(chalk.white(`   User: `) + chalk.blue(existingParams.user || "(empty)"));
+      console.log(chalk.white(`   Password: `) + chalk.gray(existingParams.password ? "***" : "(empty)"));
+      console.log(chalk.white(`   eSIM Reconfigure: `) + chalk.blue(existingParams.eSIM ? "Yes" : "No"));
+      if (existingParams.eSIM) {
+        console.log(chalk.white(`   Intermediate Operator: `) + chalk.blue(existingParams.intermediate_operator || "(empty)"));
+        console.log(chalk.white(`   Intermediate APN: `) + chalk.blue(existingParams.intermediate_apn || "(empty)"));
+        console.log(chalk.white(`   Intermediate User: `) + chalk.blue(existingParams.intermediate_user || "(empty)"));
+        console.log(chalk.white(`   Intermediate Password: `) + chalk.gray(existingParams.intermediate_password ? "***" : "(empty)"));
+      }
+      console.log("");
+    } else {
+      console.log(chalk.gray("   No network parameters configured yet."));
+      console.log("");
+    }
+  }
+  
   // Find the config option to get prompts
   const configOption = configOptions.find(opt => opt.code === config.config_code);
   
   if (configOption) {
     console.log(chalk.cyan(`\n=== ${configOption.name} ===`));
     
-    // If this is transmission windows, reading windows, or authorization, pass existing data to the configuration function
+    // If this is transmission windows, reading windows, authorization, or network config, pass existing data to the configuration function
     let newValueHex;
     if (config.config_code === tConst.CODE_C_SEND) {
       const existingWindows = transmissionWindowsDB.getByDeviceConfigId(config.id);
@@ -1183,6 +1201,21 @@ async function updatePendingConfig(config) {
     } else if (config.config_code === tConst.CODE_C_AUTH) {
       const existingParams = authorizationParametersDB.getByDeviceConfigId(config.id);
       newValueHex = await configureAuthorization(ask, existingParams);
+    } else if (config.config_code === tConst.CODE_C_WEV) {
+      const existingParams = networkParametersDB.getByDeviceConfigId(config.id);
+      // Convert database format to function format
+      const existingConfig = existingParams ? {
+        finalOperator: existingParams.final_operator,
+        finalAPN: existingParams.final_apn,
+        user: existingParams.user,
+        password: existingParams.password,
+        eSIM: existingParams.eSIM,
+        intermediateOperator: existingParams.intermediate_operator,
+        intermediateAPN: existingParams.intermediate_apn,
+        intermediateUser: existingParams.intermediate_user,
+        intermediatePassword: existingParams.intermediate_password
+      } : null;
+      newValueHex = await configureNetwork(ask, existingConfig);
     } else if (config.config_code === tConst.CODE_C_TTMAX) {
       // Parse existing value from config_value (single byte hex, minutes)
       let existingValue = null;
@@ -1191,19 +1224,21 @@ async function updatePendingConfig(config) {
       }
       newValueHex = await configureTemporaryMaxConnectionTime(ask, existingValue);
     } else if (config.config_code === tConst.CODE_C_WMBUS) {
-      // Parse existing value from config_value (0200 prefix + 2 bytes little-endian in minutes)
+      // Parse existing value from config_value
+      // Supports: 1-byte, 2-byte big-endian (per documentation), and legacy 0200 prefix format
       let existingValue = null;
-      if (config.config_value && config.config_value.length >= 6) {
-        // Check if it's 2-byte format (0200 prefix)
-        if (config.config_value.substring(0, 4) === "0200") {
-          // Extract 2-byte little-endian value (bytes 4-5)
-          // Little-endian: first byte is low, second is high - swap to get actual value
+      if (config.config_value) {
+        // Legacy format: 0200 prefix + 2 bytes little-endian
+        if (config.config_value.length >= 6 && config.config_value.substring(0, 4) === "0200") {
           const lowByte = config.config_value.substring(4, 6);
           const highByte = config.config_value.substring(6, 8);
           existingValue = parseInt(highByte + lowByte, 16);
-        } else if (config.config_value.length >= 4 && config.config_value.substring(0, 4) === "0100") {
-          // Fallback: 1-byte format
-          existingValue = parseInt(config.config_value.substring(4, 6), 16);
+        } else if (config.config_value.length === 2) {
+          // 1-byte format (e.g., "05" = 5 minutes)
+          existingValue = parseInt(config.config_value, 16);
+        } else if (config.config_value.length >= 4) {
+          // 2-byte big-endian format (e.g., "0190" = 400 minutes)
+          existingValue = parseInt(config.config_value.substring(0, 4), 16);
         }
       }
       newValueHex = await configureWmbusReadingTime(ask, existingValue);
@@ -1291,11 +1326,43 @@ async function updatePendingConfig(config) {
         console.log(chalk.green(`   Authorization parameters updated in database.`));
       }
       
+      // If this is a network config, also update the network parameters in network_parameters table
+      if (config.config_code === tConst.CODE_C_WEV && global.networkData && global.networkData.pending) {
+        const networkParams = global.networkData.pending;
+        
+        // Update network parameters
+        networkParametersDB.upsert({
+          deviceConfigId: config.id,
+          finalOperator: networkParams.finalOperator,
+          finalAPN: networkParams.finalAPN,
+          user: networkParams.user,
+          password: networkParams.password,
+          eSIM: networkParams.eSIM,
+          intermediateOperator: networkParams.intermediateOperator,
+          intermediateAPN: networkParams.intermediateAPN,
+          intermediateUser: networkParams.intermediateUser,
+          intermediatePassword: networkParams.intermediatePassword
+        });
+        
+        // Clear the pending network data
+        delete global.networkData.pending;
+        console.log(chalk.green(`   Network parameters updated in database.`));
+      }
+      
       console.log(chalk.green("\n✅ Configuration updated successfully."));
     } else {
       // Clear pending windows data if cancelled
       if (global.transmissionWindowsData && global.transmissionWindowsData.pending) {
         delete global.transmissionWindowsData.pending;
+      }
+      if (global.readingWindowsData && global.readingWindowsData.pending) {
+        delete global.readingWindowsData.pending;
+      }
+      if (global.authorizationData && global.authorizationData.pending) {
+        delete global.authorizationData.pending;
+      }
+      if (global.networkData && global.networkData.pending) {
+        delete global.networkData.pending;
       }
       console.log(chalk.yellow("⚠️  Cancelled."));
     }
@@ -1505,6 +1572,26 @@ async function showConfigurationMenu() {
             console.log(chalk.green(`   Authorization parameters saved to database.`));
           }
           
+          // If this is a network config, also insert the network parameters into network_parameters table
+          if (selectedConfig.code === tConst.CODE_C_WEV && global.networkData && global.networkData.pending) {
+            const networkParams = global.networkData.pending;
+            networkParametersDB.upsert({
+              deviceConfigId: deviceConfigId,
+              finalOperator: networkParams.finalOperator,
+              finalAPN: networkParams.finalAPN,
+              user: networkParams.user,
+              password: networkParams.password,
+              eSIM: networkParams.eSIM,
+              intermediateOperator: networkParams.intermediateOperator,
+              intermediateAPN: networkParams.intermediateAPN,
+              intermediateUser: networkParams.intermediateUser,
+              intermediatePassword: networkParams.intermediatePassword
+            });
+            // Clear the pending network data
+            delete global.networkData.pending;
+            console.log(chalk.green(`   Network parameters saved to database.`));
+          }
+          
           console.log(chalk.green("\n✅ Configuration saved to database."));
           console.log(chalk.blue("   It will be sent when the device connects to the server."));
         } else {
@@ -1517,6 +1604,9 @@ async function showConfigurationMenu() {
           }
           if (global.authorizationData && global.authorizationData.pending) {
             delete global.authorizationData.pending;
+          }
+          if (global.networkData && global.networkData.pending) {
+            delete global.networkData.pending;
           }
           console.log(chalk.yellow("⚠️  Cancelled."));
         }
