@@ -102,22 +102,21 @@ server.on("message", async (msg, rinfo) => {
           return;
         }
         
-        // Get current frame ID from session and increment it
-        let currentFrameId = session.lastFrameId || "00";
-        const frameIdNum = parseInt(currentFrameId, 16);
-        const nextFrameId = ((frameIdNum + 1) % 256).toString(16).padStart(2, "0");
+        // Use the idFrame from the incoming request (echo it back)
+        // This is critical: the device needs to receive the same idFrame it sent
+        const requestFrameId = response.idFrame || "00";
         
-        console.log(`📤 Sending config: ${config.config_type} (${config.config_code}) with Frame ID: ${nextFrameId} (was: ${currentFrameId})`);
+        console.log(`📤 Sending config: ${config.config_type} (${config.config_code}) with Frame ID: ${requestFrameId} (echoing back from request)`);
         
-        // Rebuild the config frame with current session IDs and incremented frame ID
+        // Rebuild the config frame with current session IDs and the same frame ID from request
         const valueBytes = config.config_value.length / 2;
         const sizeHex = numberToLittleEndianHex(valueBytes, 2);
         
-        // Build new config frame with current session and incremented frame ID
+        // Build new config frame with current session and same frame ID from request
         const configFrame = {
           idTrama: tConst.CODE_S_CONF,
           ack: config.config_code,
-          idFrame: nextFrameId,
+          idFrame: requestFrameId,
           idSessionH: response.sessionH,
           idSessionL: response.sessionL,
           size: sizeHex,
@@ -134,7 +133,7 @@ server.on("message", async (msg, rinfo) => {
           if (err) {
             console.error(`Error enviando configuración ${config.config_type}:`, err.message);
           } else {
-            console.log(`✅ Configuración enviada: ${config.config_type} (${config.config_code}) - Frame ID: ${nextFrameId}`);
+            console.log(`✅ Configuración enviada: ${config.config_type} (${config.config_code}) - Frame ID: ${requestFrameId}`);
             
             // Log sent configuration message
             logMessage(configBuffer, "sent", response.sessionH, response.sessionL);
@@ -142,8 +141,8 @@ server.on("message", async (msg, rinfo) => {
             // Mark as sent in database
             deviceConfigsDB.markAsSent(config.id, "Sent via ASK response");
             
-            // Update session frame ID after sending
-            updateSessionFrameId(response.sessionH, response.sessionL, nextFrameId);
+            // Update session frame ID after sending (use the frame ID we sent)
+            updateSessionFrameId(response.sessionH, response.sessionL, requestFrameId);
           }
         });
       } catch (error) {

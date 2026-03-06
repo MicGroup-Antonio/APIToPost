@@ -969,6 +969,7 @@ async function processTstProtocol(message) {
   buffer.respuesta = respuesta; // May be null if sending config instead
   buffer.sessionH = trama.idSessionH;
   buffer.sessionL = trama.idSessionL;
+  buffer.idFrame = trama.idFrame; // Pass through the idFrame from incoming request
   
   // Attach pending configs and nextPendingConfig to buffer object (if any)
   if (trama.pendingConfigs && trama.pendingConfigs.length > 0) {

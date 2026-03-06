@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { numberToLittleEndianHex } from "../utils/hex-converter.js";
 import { parseInteger } from "../utils/input-parser.js";
 import { formatMinutes } from "../utils/time-parser.js";
 
@@ -10,7 +11,7 @@ import { formatMinutes } from "../utils/time-parser.js";
  * Configure WMBUS reading time
  * @param {Function} ask - Function to prompt user for input
  * @param {number|null} existingValue - Optional existing value in minutes to pre-fill
- * @returns {Promise<string>} Hex value for the configuration frame (2 bytes big-endian, in minutes)
+ * @returns {Promise<string>} Hex value: 1 byte if ≤255 minutes, 2 bytes little-endian if >255
  */
 export async function configureWmbusReadingTime(ask, existingValue = null) {
   console.clear();
@@ -21,7 +22,7 @@ export async function configureWmbusReadingTime(ask, existingValue = null) {
   console.log(chalk.yellow("Configure the maximum WMBUS reading time."));
   console.log(chalk.white("This value specifies the maximum time (in minutes) that"));
   console.log(chalk.white("the device will listen for WMBUS readings."));
-  console.log(chalk.gray("Using 2-byte format for larger range (big-endian, per documentation)."));
+  console.log(chalk.gray("0–255 minutes: 1 byte; 256–65535 minutes: 2 bytes (little-endian)."));
   console.log("");
   
   // existingValue is already in minutes (from parsing)
@@ -66,16 +67,18 @@ export async function configureWmbusReadingTime(ask, existingValue = null) {
   console.log(chalk.gray(`   (${formatMinutes(minutes)})`));
   console.log("");
   
-  // Format: 2 bytes big-endian (minutes) - per documentation
-  // Documentation shows: 0x0190 = 400 minutes (big-endian format)
-  // Example: 60 minutes = 0x003C = "003c" (big-endian, 2 bytes)
-  // Example: 400 minutes = 0x0190 = "0190" (big-endian, 2 bytes)
-  const minutesHex = minutes.toString(16).padStart(4, "0").toLowerCase();
-  const hexValue = minutesHex;
-  
-  console.log(chalk.cyan("Hex value (2 bytes big-endian, in minutes):"));
-  console.log(chalk.white(`   ${hexValue} (${minutes} minutes = 0x${hexValue.toUpperCase()})`));
-  console.log(chalk.gray(`   Format: Big-endian (MSB first), per documentation`));
+  // 1 byte if ≤255, 2 bytes little-endian if >255
+  let hexValue;
+  if (minutes <= 255) {
+    hexValue = minutes.toString(16).padStart(2, "0").toLowerCase();
+    console.log(chalk.cyan("Hex value (1 byte, in minutes):"));
+    console.log(chalk.white(`   ${hexValue} (${minutes} minutes)`));
+  } else {
+    hexValue = numberToLittleEndianHex(minutes, 2).toLowerCase();
+    console.log(chalk.cyan("Hex value (2 bytes little-endian, in minutes):"));
+    console.log(chalk.white(`   ${hexValue} (${minutes} minutes)`));
+    console.log(chalk.gray(`   Format: Little-endian (LSB first)`));
+  }
   console.log("");
   
   await ask(chalk.gray("Press Enter to continue..."));

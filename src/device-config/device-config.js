@@ -897,9 +897,9 @@ function parseConfigParameters(configCode, configValue, configId) {
         break;
 
       case tConst.CODE_C_WMBUS:
-        // WMBUS Reading Time: Per documentation
+        // WMBUS Reading Time
         // Format 1: 1 byte (0-255 minutes) - e.g., "05" = 5 minutes
-        // Format 2: 2 bytes big-endian (0-65535 minutes) - e.g., "0190" = 400 minutes
+        // Format 2: 2 bytes little-endian (0-65535 minutes) - e.g., "9001" = 400 minutes
         // Also supports legacy format: 0200 prefix + 2 bytes little-endian (for backward compatibility)
         if (configValue.length >= 2) {
           // Check for legacy format with 0200 prefix (backward compatibility)
@@ -916,9 +916,10 @@ function parseConfigParameters(configCode, configValue, configId) {
             params.parsed.minutes = minutes;
             params.parsed.formatted = `${minutes} minutes (${formatMinutes(minutes)})`;
           } else if (configValue.length >= 4) {
-            // Format 2: 2 bytes big-endian (e.g., "0190" = 400 minutes)
-            // Big-endian: MSB first, so parse directly
-            const minutes = parseInt(configValue.substring(0, 4), 16);
+            // Format 2: 2 bytes little-endian (e.g., "9001" = 400 minutes)
+            const lowByte = configValue.substring(0, 2);
+            const highByte = configValue.substring(2, 4);
+            const minutes = parseInt(highByte + lowByte, 16);
             params.parsed.minutes = minutes;
             params.parsed.formatted = `${minutes} minutes (${formatMinutes(minutes)})`;
           }
@@ -1225,7 +1226,7 @@ async function updatePendingConfig(config) {
       newValueHex = await configureTemporaryMaxConnectionTime(ask, existingValue);
     } else if (config.config_code === tConst.CODE_C_WMBUS) {
       // Parse existing value from config_value
-      // Supports: 1-byte, 2-byte big-endian (per documentation), and legacy 0200 prefix format
+      // Supports: 1-byte, 2-byte little-endian, and legacy 0200 prefix format
       let existingValue = null;
       if (config.config_value) {
         // Legacy format: 0200 prefix + 2 bytes little-endian
@@ -1237,8 +1238,10 @@ async function updatePendingConfig(config) {
           // 1-byte format (e.g., "05" = 5 minutes)
           existingValue = parseInt(config.config_value, 16);
         } else if (config.config_value.length >= 4) {
-          // 2-byte big-endian format (e.g., "0190" = 400 minutes)
-          existingValue = parseInt(config.config_value.substring(0, 4), 16);
+          // 2-byte little-endian format (e.g., "9001" = 400 minutes)
+          const lowByte = config.config_value.substring(0, 2);
+          const highByte = config.config_value.substring(2, 4);
+          existingValue = parseInt(highByte + lowByte, 16);
         }
       }
       newValueHex = await configureWmbusReadingTime(ask, existingValue);
