@@ -8,6 +8,7 @@ import { configureAuthorization } from "./messages/authorization.js";
 import { configureTemporaryMaxConnectionTime } from "./messages/temporary-max-connection-time.js";
 import { configureWmbusReadingTime } from "./messages/wmbus-reading-time.js";
 import { configureNetwork } from "./messages/network-config.js";
+import { configureRemoteServerParameters } from "./messages/remote-server.js";
 import { formatMinutesForDisplay, formatMinutes } from "./utils/time-parser.js";
 import { numberToLittleEndianHex } from "./utils/hex-converter.js";
 import { parseInteger, parseBoolean, parseText, parsePort, isValidHex, stringToHexPadded } from "./utils/input-parser.js";
@@ -266,17 +267,7 @@ async function getConfigParameters(configCode) {
       return ntpValue;
       
     case tConst.CODE_C_RSER:
-      console.log(chalk.cyan("\n=== Remote Server Parameters ==="));
-      let rserValue;
-      while (true) {
-        const hexInput = await ask(chalk.yellow("Enter remote server configuration (hex): "));
-        if (isValidHex(hexInput)) {
-          rserValue = hexInput.trim().toLowerCase();
-          break;
-        }
-        console.log(chalk.red("❌ Invalid hex format. Please enter hexadecimal characters only (0-9, a-f)."));
-      }
-      return rserValue;
+      return await configureRemoteServerParameters(ask);
       
     case tConst.CODE_C_TRSER:
       console.log(chalk.cyan("\n=== Temporary Remote Server ==="));
@@ -846,6 +837,38 @@ function parseConfigParameters(configCode, configValue, configId) {
         }
         break;
 
+      case tConst.CODE_C_RSER:
+        // Remote Server Parameters: 50 IP + 1 reserved + 2 port LE + 1 mode + 40 PSK_ID + 1 reserved + 64 PSK_Content + 1 reserved = 160 bytes
+        if (configValue.length >= 320) {
+          let ip = "";
+          for (let i = 0; i < 100; i += 2) {
+            const byte = parseInt(configValue.substring(i, i + 2), 16);
+            if (byte === 0) break;
+            ip += String.fromCharCode(byte);
+          }
+          const portHex = configValue.substring(102, 106);
+          const port = parseInt(portHex.substring(2, 4) + portHex.substring(0, 2), 16);
+          const mode = parseInt(configValue.substring(106, 108), 16);
+          let pskId = "";
+          for (let i = 108; i < 188; i += 2) {
+            const byte = parseInt(configValue.substring(i, i + 2), 16);
+            if (byte === 0) break;
+            pskId += String.fromCharCode(byte);
+          }
+          let pskContent = "";
+          for (let i = 190; i < 318; i += 2) {
+            const byte = parseInt(configValue.substring(i, i + 2), 16);
+            if (byte === 0) break;
+            pskContent += String.fromCharCode(byte);
+          }
+          params.parsed.ip = ip;
+          params.parsed.port = port;
+          params.parsed.mode = mode;
+          params.parsed.pskId = pskId;
+          params.parsed.pskContent = pskContent;
+        }
+        break;
+
       case tConst.CODE_C_AUTH:
         // Authorization: get from database
         const authParams = authorizationParametersDB.getByDeviceConfigId(configId);
@@ -985,6 +1008,25 @@ function displayConfigParameters(params) {
       }
       if (params.parsed.port !== undefined) {
         console.log(chalk.white(`   Server Port: `) + chalk.blue(params.parsed.port));
+      }
+      break;
+
+    case tConst.CODE_C_RSER:
+      if (params.parsed.ip !== undefined) {
+        console.log(chalk.white(`   IP: `) + chalk.blue(params.parsed.ip));
+      }
+      if (params.parsed.port !== undefined) {
+        console.log(chalk.white(`   Port: `) + chalk.blue(params.parsed.port));
+      }
+      if (params.parsed.mode !== undefined) {
+        const modeNames = { 0: "UDO", 1: "UDP-DTLS", 2: "LwM2M" };
+        console.log(chalk.white(`   Mode: `) + chalk.blue(`${params.parsed.mode} (${modeNames[params.parsed.mode] ?? "?"})`));
+      }
+      if (params.parsed.pskId !== undefined) {
+        console.log(chalk.white(`   PSK_ID: `) + chalk.gray(params.parsed.pskId ? "(set)" : "(empty)"));
+      }
+      if (params.parsed.pskContent !== undefined) {
+        console.log(chalk.white(`   PSK_Content: `) + chalk.gray(params.parsed.pskContent ? "(set)" : "(empty)"));
       }
       break;
 
@@ -1217,6 +1259,34 @@ async function updatePendingConfig(config) {
         intermediatePassword: existingParams.intermediate_password
       } : null;
       newValueHex = await configureNetwork(ask, existingConfig);
+    } else if (config.config_code === tConst.CODE_C_RSER) {
+      // Parse existing value from config_value (160 bytes: IP 50 + reserved + port 2 LE + mode 1 + PSK_ID 40 + reserved + PSK_Content 64 + reserved)
+      let existingParams = null;
+      if (config.config_value && config.config_value.length >= 320) {
+        let ip = "";
+        for (let i = 0; i < 100; i += 2) {
+          const byte = parseInt(config.config_value.substring(i, i + 2), 16);
+          if (byte === 0) break;
+          ip += String.fromCharCode(byte);
+        }
+        const portHex = config.config_value.substring(102, 106);
+        const port = parseInt(portHex.substring(2, 4) + portHex.substring(0, 2), 16);
+        const mode = parseInt(config.config_value.substring(106, 108), 16);
+        let pskId = "";
+        for (let i = 108; i < 188; i += 2) {
+          const byte = parseInt(config.config_value.substring(i, i + 2), 16);
+          if (byte === 0) break;
+          pskId += String.fromCharCode(byte);
+        }
+        let pskContent = "";
+        for (let i = 190; i < 318; i += 2) {
+          const byte = parseInt(config.config_value.substring(i, i + 2), 16);
+          if (byte === 0) break;
+          pskContent += String.fromCharCode(byte);
+        }
+        existingParams = { ip, port, mode, pskId, pskContent };
+      }
+      newValueHex = await configureRemoteServerParameters(ask, existingParams);
     } else if (config.config_code === tConst.CODE_C_TTMAX) {
       // Parse existing value from config_value (single byte hex, minutes)
       let existingValue = null;

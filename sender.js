@@ -108,6 +108,7 @@ function incrementFrameId() {
  * @returns {string} Configuration name
  */
 function getConfigCodeName(code) {
+  // Keys are hex bytes as sent in frame (ack byte)
   const configNames = {
     "01": "PSM Configuration",
     "02": "Network Configuration",
@@ -118,13 +119,14 @@ function getConfigCodeName(code) {
     "07": "Authorization Parameters",
     "08": "Magnet Activation",
     "09": "RTC Adjustment",
-    "10": "NTP Configuration",
-    "11": "Remote Server Parameters",
-    "13": "Max Connection Time",
-    "14": "Temporary Max Connection Time",
-    "15": "WMBUS Reading Time"
+    "0a": "NTP Configuration",
+    "0b": "Remote Server Parameters",
+    "0c": "Temporary Remote Server",
+    "0d": "Max Connection Time",
+    "0e": "Temporary Max Connection Time",
+    "0f": "WMBUS Reading Time"
   };
-  return configNames[code] || `Unknown (${code})`;
+  return configNames[code?.toLowerCase()] || configNames[code] || `Unknown (${code})`;
 }
 
 /**
