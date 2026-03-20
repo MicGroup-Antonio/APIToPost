@@ -68,10 +68,11 @@ Some configuration types have enhanced interactive prompts:
 - Stored securely in database
 - Can be updated before sending
 
-#### Server Parameters
-- Server host/IP address (max 64 bytes)
-- Server port (1-65535)
-- Automatically formatted as hex for frame
+#### Server Parameters (spec 10.3.5.3)
+- **160-byte value**: IP ASCII (50 bytes, null-padded), reserved byte, port (uint16 LE), mode (0=UDP, 1=UDP-DTLS, 2=LwM2M), PSK_ID (40 bytes), reserved, PSK_Content (64 bytes), reserved
+
+#### Remote Server Parameters (CODE_C_RSER)
+- Same **160-byte** layout as Server Parameters; used for temporary / alternate server (e.g. OTAP).
 
 #### Time-based Configurations
 - Max Connection Time, Temporary Max Connection Time, WMBUS Reading Time
@@ -117,7 +118,7 @@ The script generates CONFIG frames (type `11`) with:
 ### Interactive Types
 - **Transmission/Reading Windows**: Interactive prompts for time windows
 - **Authorization**: Username and password prompts
-- **Server Parameters**: Host/IP and port prompts
+- **Server Parameters**: IP (≤50 chars), port, mode, optional PSK fields → 160-byte hex value
 - **NTP**: Server address prompt
 - **Magnet**: Boolean enable/disable prompt
 - **Time-based**: Seconds input (converted to 4-byte little-endian)

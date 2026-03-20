@@ -1,6 +1,7 @@
 import dgram from "dgram";
 import { calcularCRC, parseTrama } from "./src/tst.js";
 import * as tConst from "./src/const.js";
+import { parse160ByteServerParametersPayload } from "./src/device-config/messages/server-payload-160.js";
 
 import readline from "readline";
 
@@ -127,6 +128,31 @@ function getConfigCodeName(code) {
     "0f": "WMBUS Reading Time"
   };
   return configNames[code?.toLowerCase()] || configNames[code] || `Unknown (${code})`;
+}
+
+const MODE_NAMES_160 = { 0: "UDP", 1: "UDP-DTLS", 2: "LwM2M" };
+
+/** Log decoded 10.3.5.3-style payload for CONFIG ack 03 (server) or 0b (remote). */
+function logDecodedServerConnection160(ackHex, valueHex) {
+  const ack = (ackHex || "").toLowerCase();
+  if (ack !== tConst.CODE_C_SERV && ack !== tConst.CODE_C_RSER) {
+    return;
+  }
+  if (!valueHex || valueHex.length < 320) {
+    console.log(
+      `   ⚠️ Valor CODE ${ack}: se esperan 160 bytes (320 hex); recibidos ${valueHex ? valueHex.length / 2 : 0} bytes`
+    );
+    return;
+  }
+  const p = parse160ByteServerParametersPayload(valueHex);
+  if (!p) return;
+  const label = ack === tConst.CODE_C_SERV ? "Parámetros del servidor (10.3.5.3)" : "Servidor remoto (mismo layout 160 B)";
+  console.log(`   📋 ${label}:`);
+  console.log(`      IP: ${p.ip || "(vacío)"}`);
+  console.log(`      Puerto: ${p.port}`);
+  console.log(`      Modo: ${p.mode} (${MODE_NAMES_160[p.mode] ?? "?"})`);
+  console.log(`      PSK_ID: ${p.pskId ? `"${p.pskId}"` : "(vacío)"}`);
+  console.log(`      PSK_Content: ${p.pskContent ? "(definido)" : "(vacío)"}`);
 }
 
 /**
@@ -494,6 +520,8 @@ let hex = hexOpciones["auth"].toLowerCase();
                 } else {
                   console.log(`   ❌ CRC inválido (esperado: ${expectedCrc}, recibido: ${trama.crc})`);
                 }
+
+                logDecodedServerConnection160(trama.ack, trama.value);
                 
                 // Update device state with received config frame ID and session
                 deviceState.frameId = trama.idFrame;
